@@ -1,0 +1,108 @@
+# ==============================================================================
+# AgroTwin - Git Ignore
+# ==============================================================================
+
+# --- AgroTwin Local Data Directory & Database (Critical: 9+ GB) ---
+/data/
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# --- Large Generated 3D & GIS Web Assets ---
+# Copied/built assets served by Next.js in frontend/public
+frontend/public/cesium/
+frontend/public/models/
+frontend/public/splats/
+frontend/public/tiles/
+
+# --- Environment & Secret Variables ---
+.env
+.env.local
+.env.*.local
+*.env
+*.pem
+*.key
+.agents
+# --- Python Backend ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node.js & Next.js Frontend ---
+node_modules/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Next.js build output
+.next/
+out/
+dist/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs & Debugging
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+*.log
+
+# Vercel
+.vercel/
+
+# --- Operating System & IDE ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE configs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
