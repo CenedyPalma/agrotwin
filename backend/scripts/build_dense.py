@@ -116,6 +116,20 @@ def read_splats(path: Path, band_m: float = 15.0):
     return pos[keep], col[keep], nrm[keep]
 
 
+def read_sparse(model_dir: Path):
+    """Geo-aligned COLMAP points3D -> positions (glTF frame, same as the splats)
+    and RGB. Drops points seen from fewer than 3 views: two-view triangulations
+    on a nadir grid are the least depth-constrained."""
+    import pycolmap
+
+    rec = pycolmap.Reconstruction(str(model_dir))
+    pts = [p for p in rec.points3D.values() if p.track.length() >= 3]
+    pos = np.array([p.xyz for p in pts], np.float32)
+    col = np.array([p.color for p in pts], np.uint8)
+    log(f"sparse: {len(pos)} of {rec.num_points3D()} SfM points with >=3 views")
+    return pos, col
+
+
 def read_fused(path: Path):
     v = PlyData.read(str(path))["vertex"]
     pos = np.stack([v["x"], v["y"], v["z"]], axis=1).astype(np.float32)

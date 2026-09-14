@@ -67,11 +67,17 @@ Roadmap phases per the original spec, and what's actually done.
       the first full runs drifted upward along the nadir-only view rays
       (median splat height ended ~5 m above the SfM ground; the cloud is a
       ~12 m thick smear), so the tileset currently under
-      `frontend/public/splats/8dab5067ab14/` is NOT a usable reconstruction
-      and `build_dense.py` has deliberately not been run on it (its DSM would
-      be the floaters' envelope). A ground-band constraint is being added to
-      the trainer; the dense products for 3D Twin mode follow once a good
-      model lands. Full measurements: `docs/STATUS_REPORT_2026-09-14.md`.
+      `frontend/public/splats/8dab5067ab14/` is NOT a usable reconstruction;
+      a ground-band constraint is being added to the trainer. **3D Twin mode
+      is real for this survey**: `build_dense.py --source sparse` (now the
+      default) builds the dense products from the SfM's 760,597 triangulated
+      points (≥3 views, 97.3 % within ±3 m of the ground plane) instead of
+      the splats — a 509k-point cloud (10 cm voxels), a 0.5 m DSM
+      (259–265 m ellipsoidal; the 5 m span is the tree line at the margins),
+      a bare-earth DTM and a 108k-vertex terrain mesh textured with the quick
+      mosaic, registered as `pointcloud` / `dsm` / `dtm` / `model3d` assets
+      and served from `frontend/public/models/8dab5067ab14/`. Full
+      measurements: `docs/STATUS_REPORT_2026-09-14.md`.
 - [x] Mobile client — `mobile/` (Expo SDK 57 / React Native) farmer app
       against the same API and data: dashboard, field map (react-native-maps
       with boundary, zones, capture points and the `/tiles` pyramids), survey
@@ -108,10 +114,10 @@ Roadmap phases per the original spec, and what's actually done.
 - Thermal stays disabled — no thermal band in either dataset.
 - PPK post-processing is not run (no base-station data); the drones flew with
   network RTK and positions are used as recorded, with fix quality shown.
-- The 40 ft survey's Gaussian-splat model and its dense products (DSM /
-  point cloud / terrain mesh) are pending a retrained model (see Phase 9);
-  Photorealistic mode and the 3D Twin's mesh/elevation layers are the only
-  viewer features without real data for this survey.
+- The 40 ft survey's Gaussian-splat model is pending a retrained model (see
+  Phase 9); Photorealistic mode is the only viewer feature without usable
+  data for this survey. The 3D Twin's terrain / elevation / point-cloud
+  layers come from the SfM cloud and are real.
 - The field's crop type was set to "soybean" at ingest as a placeholder —
   correct it with the pencil on the field page (`PATCH /api/fields/{id}`).
 - The CUDA toolkit (4.1 GB) and the global uv cache (3.9 GB) still live on
