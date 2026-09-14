@@ -15,17 +15,25 @@ const SUGGESTIONS = [
   "What changed since the last survey?",
 ];
 
+function responderLabel(responder: string) {
+  return responder.startsWith("ollama:")
+    ? `answered by the local model (${responder.slice("ollama:".length)})`
+    : "answered from the measured numbers (no language model running)";
+}
+
 export default function AskAiPage() {
   const { data: fields } = useQuery({ queryKey: ["fields"], queryFn: api.listFields });
-  const fieldWithSurvey = fields?.find((f) => f.latest_survey_id);
-  const surveyId = fieldWithSurvey?.latest_survey_id ?? null;
+  const withSurvey = fields?.filter((f) => f.latest_survey_id) ?? [];
+  const [fieldId, setFieldId] = useState<string | null>(null);
+  const field = withSurvey.find((f) => f.id === fieldId) ?? withSurvey[0];
+  const surveyId = field?.latest_survey_id ?? null;
 
   const [question, setQuestion] = useState("");
-  const [history, setHistory] = useState<{ q: string; a: string }[]>([]);
+  const [history, setHistory] = useState<{ q: string; a: string; responder: string }[]>([]);
 
   const ask = useMutation({
     mutationFn: (q: string) => api.askAssistant(surveyId as string, q),
-    onSuccess: (res) => setHistory((h) => [...h, { q: res.question, a: res.answer }]),
+    onSuccess: (res) => setHistory((h) => [...h, { q: res.question, a: res.answer, responder: res.responder }]),
   });
 
   function send(q: string) {
@@ -45,28 +53,47 @@ export default function AskAiPage() {
             <h1 className="text-xl sm:text-2xl font-semibold">Ask AI</h1>
           </div>
           <p className="text-muted-foreground mt-2 text-xs sm:text-sm">
-            Answers are grounded in this field&apos;s real computed analysis and precision drone data —
-            powered by your local offline Ollama model (<span className="text-foreground font-medium">Llama 3.2 3B</span>)
-            with zero cloud latency or external API dependencies.
+            Answers are grounded in the field&apos;s measured analysis — the assistant explains the numbers, it never
+            invents findings. A local Ollama model is used for the wording when one is running; otherwise the answer is
+            built directly from the measurements and says so.
           </p>
         </div>
 
-        {!surveyId && (
+        {withSurvey.length === 0 && (
           <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
             No field with a survey yet — create one from Upload first.
           </div>
         )}
 
-        {surveyId && (
+        {field && surveyId && (
           <>
+            {withSurvey.length > 1 && (
+              <select
+                value={field.id}
+                onChange={(e) => {
+                  setFieldId(e.target.value);
+                  setHistory([]);
+                }}
+                className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              >
+                {withSurvey.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {withSurvey.length === 1 && <div className="text-xs text-muted-foreground">Field: {field.name} (latest survey)</div>}
+
             <div className="space-y-3">
               {history.map((h, i) => (
                 <div key={i} className="space-y-1.5">
                   <div className="ml-auto max-w-[85%] w-fit rounded-lg rounded-br-sm bg-brand px-3 py-2 text-sm text-white">
                     {h.q}
                   </div>
-                  <div className="mr-auto max-w-[85%] w-fit whitespace-pre-line rounded-lg rounded-bl-sm border border-border bg-surface px-3 py-2 text-sm">
-                    {h.a}
+                  <div className="mr-auto max-w-[85%] w-fit rounded-lg rounded-bl-sm border border-border bg-surface px-3 py-2 text-sm">
+                    <div className="whitespace-pre-line">{h.a}</div>
+                    <div className="mt-1.5 text-[10px] text-muted-foreground">{responderLabel(h.responder)}</div>
                   </div>
                 </div>
               ))}
@@ -75,6 +102,7 @@ export default function AskAiPage() {
                   <Loader2 size={14} className="animate-spin" /> Thinking…
                 </div>
               )}
+              {ask.isError && <div className="text-sm text-problem">{(ask.error as Error).message}</div>}
             </div>
 
             {history.length === 0 && (

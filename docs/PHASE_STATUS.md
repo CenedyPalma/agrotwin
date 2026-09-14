@@ -2,123 +2,132 @@
 
 Roadmap phases per the original spec, and what's actually done.
 
-- [x] Phase 1 — Project setup (Next.js + FastAPI, connected, CORS'd)
+- [x] Phase 1 — Project setup (Next.js + FastAPI, connected, CORS'd). Windows
+      (`run.ps1`) and Linux (`run.sh`/`setup.sh`) launchers; the backend runs
+      from `backend/.venv-gpu` (Python 3.11 + CUDA torch) when present.
 - [x] Phase 2 — Dashboard UI, wired to real API data: field cards, Recent
-      Surveys, Problem Areas (`app/dashboard/page.tsx`)
+      Surveys, Problem Areas (`app/dashboard/page.tsx`).
 - [x] Phase 3 — Cesium Digital Twin viewer, split into CesiumViewer
       (lifecycle only) + CesiumScene (boundary/points/camera) +
-      SurveyImageryLayer (raster overlays) + DetectionLayer (zones/click).
-      Field Map mode is fully real. 3D Twin mode reuses the same layers with
-      a pitched camera — no real terrain/mesh yet (EllipsoidTerrainProvider
-      only, no Ion token used anywhere). Photorealistic mode is a UI stub
-      that honestly reports no splat reconstruction exists for this field.
-- [x] Phase 4 — Survey management: create field/survey, upload images, view
-      images + EXIF metadata + GPS, availability checklist, processing
-      progress UI (`ProcessingProgress.tsx`) with real PENDING → UPLOADING →
-      PROCESSING → GENERATING_ANALYSIS → COMPLETED/FAILED states.
-- [x] Phase 5 — Real geospatial data + orthomosaics, end to end. Two
-      sources of georeferenced rasters, both rendered in Cesium via
-      SingleTileImageryProvider + Rectangle at their real bounds:
-      (a) manual import of any GeoTIFF (`POST /api/surveys/{id}/assets`);
-      (b) **quick mosaics built from the survey's own frames**
-      (`mosaic_service.py`, direct georeferencing): RTK-fixed positions
-      (σ≈2 cm on 229/230 frames), gimbal yaw, AGL altitude and the
-      calibrated intrinsics from DJI XMP, frames undistorted with DJI's
-      DewarpData (the RGB lens has ≈−11 % radial distortion — >1 m at the
-      corners), centre-weighted blending. Outputs: RGB orthomosaic
-      (10 cm/px) + NDVI/NDRE/GNDVI maps (15 cm/px) in UTM 16N. Built as the
-      real `GENERATING_ORTHOMOSAIC` processing step and on demand
-      (`POST /api/surveys/{id}/mosaic`, "Rebuild Quick Mosaic" button).
-      Documented limits: flat-ground assumption, AGL relative to takeoff,
-      no colour balancing, no bundle adjustment — a "2D quick map", not
-      photogrammetry.
-- [x] Phase 6 — Multispectral, on real data. The DJI mission folders
-      (`DJI_202606031411_012_…` / `…1442_013_…`) carry Green/Red/RedEdge/NIR
-      16-bit TIFs for all 230 frames plus PPK/RTK sidecars. Ingestion is
-      band-aware (`survey_service.classify_dji_file`), frames are grouped by
-      `frame_key`, and `multispectral_service` computes real per-frame
-      NDVI/NDRE/GNDVI from the raw bands: stats persisted on each frame,
-      colorized previews served by `/frames/{key}/index/{ndvi|ndre|gndvi}`,
-      band TIFs viewable via `/display`. Bands are radiometrically
-      calibrated from DJI's XMP (vignetting polynomial, black level,
-      gain × exposure, sun-sensor irradiance) and registered with DJI's
-      CalibratedHMatrix (measured: NIR↔RedEdge gradient correlation
-      0.21 → 0.59). The map-space NDVI/NDRE/GNDVI come from the quick
-      mosaic (Phase 5).
+      SurveyImageryLayer (raster drapes) + DetectionLayer (zones/click) +
+      ModelLayer (3D Tiles meshes / point clouds) + VectorLayer (GeoJSON) +
+      SplatLayer. Three modes; Advanced View adds NDVI/NDRE/GNDVI, elevation,
+      point cloud and a live coordinate readout (WGS84 + terrain height).
+- [x] Phase 4 — Survey management: create field/survey, batched resumable
+      uploads (20 files per request, already-received files skipped, DJI
+      band files paired into frames by sequence number + timestamp), image
+      grid + lightbox (zoom/pan/fullscreen), EXIF/XMP metadata + GPS,
+      availability checklist, delete survey/field (generated data only —
+      in-place drone files are never removed).
+- [x] Phase 5 — Real geospatial data + orthomosaics, end to end. Three
+      sources of georeferenced rasters, all rendered in Cesium at their real
+      bounds (tile pyramid when built, flat preview otherwise):
+      (a) manual import of any GeoTIFF; (b) **quick mosaics built from the
+      survey's own frames** (`mosaic_service.py`, direct georeferencing from
+      RTK positions, gimbal yaw, AGL altitude, calibrated intrinsics and DJI
+      DewarpData; GPU warp path with numpy fallback); (c) OpenDroneMap
+      orthophotos via `scripts/import_odm.py`. Documented limits of (b):
+      flat-ground assumption, AGL relative to takeoff, no colour balancing,
+      no bundle adjustment — a "2D quick map", not photogrammetry.
+- [x] Phase 6 — Multispectral, on real data (the Ditty Road M3M survey with
+      Green/Red/RedEdge/NIR 16-bit TIFs + PPK/RTK sidecars). Band-aware
+      ingestion, per-frame NDVI/NDRE/GNDVI from radiometrically calibrated
+      (vignetting, black level, gain×exposure, sun sensor) and registered
+      (CalibratedHMatrix) bands, colorized previews, map-space index mosaics.
+      The survey currently loaded on this machine ("40 ft RGB Site") is
+      RGB-only, so those layers are present in code but not in its data.
 - [x] Phase 7 — Analysis measured from the survey's own imagery, method
-      recorded on every result: `method="ndvi_map"` (5 m cells on the
-      georeferenced NDVI mosaic — true area percentages, no double-counting
-      of overlapping photos; the seeded survey), `method="ndvi"` (per-frame,
-      multispectral without a mosaic), `method="exg"` (RGB-only Excess Green
-      Index). Never mixed within one analysis; the UI and assistant label the
-      method everywhere and warn when comparing across methods.
-      `is_mock` is `false`. Per-frame scores drive the "Crop Density" layer.
-      Still NOT a trained model: cannot identify weed species or disease —
-      a real YOLO/SAM detector remains the upgrade path (needs labeled data;
-      a hand-rolled row-alignment weed heuristic was deliberately not shipped
-      because an unreliable heuristic dressed as a finding is fake data).
-- [x] Phase 8 (architecture + template responder, no LLM API) —
-      `llm_service.py` assembles structured field context and answers the
-      question categories from the spec (status, problem areas, weeds,
-      comparison — now a real survey-to-survey comparison with a caveat
-      when the two surveys used different methods) via templates over real
-      numbers — no API key is
-      configured in this environment, so there's no live LLM call. The
-      interface is exactly what a real LLM integration would plug into.
-      `/ask-ai` is wired to it, not a static stub.
-- [x] Phase 9 — Photorealistic (Gaussian splats) from the survey's frames:
-      `scripts/build_splats.py` (GPU venv) runs pycolmap SfM with spatial
-      pairing on the RTK positions (230/230 frames registered, 286k points),
-      Sim3 geo-alignment to the RTK camera positions (0.22 m median
-      residual → true scale/orientation), gsplat training (15k steps,
-      ~90 min on the RTX 3050, 598k splats), then `scripts/tile_splats_spz.py`
-      writes an SPZ-compressed KHR_gaussian_splatting 3D Tiles set
-      (8.3 MB after pruning 176k floaters) into
-      `frontend/public/splats/<survey_id>/` — the only form CesiumJS 1.145
-      renders (verified: the SPZ path draws, the uncompressed path fails
-      in Cesium's point pipeline). Photorealistic mode (`SplatLayer.tsx`)
-      loads it and reports honestly when a survey has none. Because the
-      viewer has no terrain, the cloud's ground plane is placed on the
-      ellipsoid (`--ground-at-ellipsoid`) so it coincides with the imagery
-      and zones instead of floating at its true ~263 m height. Known look:
-      nadir-only captures give "needle" splats at grazing angles; the
-      default camera is a steep view for that reason.
-      **3D Twin mode now has real terrain**: `scripts/build_dense.py` turns
-      the GPU-trained reconstruction into a dense point cloud (169k points,
-      10 cm), a digital surface model (0.5 m GeoTIFF, "Elevation" layer) and
-      a 2.5D terrain mesh textured with the RGB quick mosaic (3D Tiles,
-      "3D Terrain" layer). Dense geometry comes from the 3DGS centres
-      (each Gaussian is a surface sample with colour and a normal) because
-      the PyPI `pycolmap` wheel is built without CUDA and refuses to run
-      PatchMatch stereo; `--source mvs` is wired for a CUDA build. Known
-      look: the DSM is an upper envelope, so the tree line at the field
-      margins renders as spiky relief.
+      recorded on every result: `ndvi_map` / `exg_map` (5 m cells on the
+      georeferenced NDVI mosaic / RGB orthomosaic — true area shares, no
+      double-counting of overlapping photos), `ndvi` / `exg` (per frame, when
+      no mosaic exists). Tiers compare each cell with the cover the field's
+      own best ground reaches (p90): ≥80 % healthy, 50–80 % attention, <50 %
+      problem — so a uniform field reads healthy and the shares are
+      measured, not fixed by construction. Zones carry type (bare soil / low
+      density / patchy), severity, confidence and a safe action. `is_mock`
+      is `false` everywhere. Still NOT a trained model: cannot identify weed
+      species or disease — a YOLO/SAM detector remains the upgrade path and
+      needs labeled data this project doesn't have.
+- [x] Phase 8 — Assistant: `llm_service.py` assembles structured field
+      context (numbers, method, tier rule, previous survey) and answers via a
+      local Ollama model when one is reachable, else via templates over the
+      same real numbers. The API and UI report which responder answered, so
+      the app never implies a model that isn't running. RAG is deliberately
+      not built yet.
+- [x] Phase 9 — Photorealistic (Gaussian splats) and dense 3D from the
+      survey's frames: `scripts/build_splats.py` (CUDA COLMAP SfM with
+      spatial pairing, Sim3 geo-alignment to the RTK camera positions,
+      in-repo gsplat trainer `scripts/gsplat_train.py`), `tile_splats_spz.py`
+      (SPZ-compressed KHR_gaussian_splatting 3D Tiles — the only form Cesium
+      1.145 draws), `build_dense.py` (dense cloud, DSM, textured 2.5D terrain
+      mesh). Proven end to end on the original 230-frame multispectral
+      survey. For the 1,378-frame 40 ft survey (2026-09-14): SfM is done
+      (1,378/1,378 frames registered, 770k points, 0.48 m median residual to
+      the RTK positions), but the 3DGS training is **still in progress** —
+      the first full runs drifted upward along the nadir-only view rays
+      (median splat height ended ~5 m above the SfM ground; the cloud is a
+      ~12 m thick smear), so the tileset currently under
+      `frontend/public/splats/8dab5067ab14/` is NOT a usable reconstruction
+      and `build_dense.py` has deliberately not been run on it (its DSM would
+      be the floaters' envelope). A ground-band constraint is being added to
+      the trainer; the dense products for 3D Twin mode follow once a good
+      model lands. Full measurements: `docs/STATUS_REPORT_2026-09-14.md`.
+- [x] Mobile client — `mobile/` (Expo SDK 57 / React Native) farmer app
+      against the same API and data: dashboard, field map (react-native-maps
+      with boundary, zones, capture points and the `/tiles` pyramids), survey
+      results, processing status, imports, AI assistant, and the Cesium
+      Digital Twin in a WebView through the `agrotwin-bridge/1` host bridge
+      (`frontend/lib/hostBridge.ts`). Zero backend changes. Verified with
+      tsc, 36 jest tests and an Android bundle export; not yet run on a
+      physical device from these sessions. See `mobile/README.md` and
+      `MOBILE_INTEGRATION_PLAN.md` §7.
+- [x] Processing architecture — jobs run on a background worker
+      (`services/job_runner.py`): `POST …/process`, `…/mosaic`,
+      `…/recompute` return 202 + a job, `GET /api/surveys/{id}/job` reports
+      per-step progress, failures keep their message and can be retried,
+      and jobs interrupted by an API restart are marked failed on startup.
+      One in-process thread today; Celery/RQ replaces `submit()` later.
+- [x] Manual import (§13 Mode B) — `services/import_service.py` accepts
+      GeoTIFF rasters, GeoJSON, Cesium 3D Tiles (.zip) and LAS/LAZ point
+      clouds (tiled by `pointcloud_service.py`). Everything is placed by the
+      file's own georeference; unplaceable formats (bare glTF/OBJ, local-frame
+      tilesets, CRS-less LAS, projected GeoJSON) are refused with a message
+      saying what to export instead. Imports are served by the API from
+      `data/surveys/<id>/imports/<asset>/`.
 
 ## Still open (honest gaps, not hidden)
 
-- No PyTorch/YOLO/SAM — the analysis is classical CV on calibrated
+- No PyTorch/YOLO/SAM inference — the analysis is classical CV on calibrated
   vegetation indices, not a trained deep-learning model. A real weed/disease
   detector needs labeled training data this project doesn't have.
-- The 3D products are placed with their ground on the ellipsoid (the
-  viewer has no global terrain), and the mesh is a 2.5D heightfield — it
-  cannot represent overhangs (tree canopies become spikes/columns).
-- Thermal stays disabled — no thermal band in this dataset.
-- PPK post-processing is not run (no base-station data). It isn't needed
-  here: the drone flew with network RTK (NTRIP) and 229/230 frames are
-  RTK-FIXED at ≈2 cm — the app surfaces the fix quality per frame and uses
-  those positions directly.
-- shadcn/ui is used for the primitives (Button, Card, Badge, Checkbox,
-  Input, Select, Tooltip, Separator) with the AgroTwin palette mapped onto
-  its tokens; some layout chrome (sidebar, topbar) is still hand-written.
+- The generated 3D products are placed with their ground on the sampled
+  global terrain (~10–30 m resolution), and the built-in mesh is a 2.5D
+  heightfield — it cannot represent overhangs (tree canopies become spikes).
+  An OpenDroneMap run (`import_odm.py`) or an imported 3D Tiles model gives
+  true 3D.
+- Thermal stays disabled — no thermal band in either dataset.
+- PPK post-processing is not run (no base-station data); the drones flew with
+  network RTK and positions are used as recorded, with fix quality shown.
+- The 40 ft survey's Gaussian-splat model and its dense products (DSM /
+  point cloud / terrain mesh) are pending a retrained model (see Phase 9);
+  Photorealistic mode and the 3D Twin's mesh/elevation layers are the only
+  viewer features without real data for this survey.
+- The field's crop type was set to "soybean" at ingest as a placeholder —
+  correct it with the pencil on the field page (`PATCH /api/fields/{id}`).
+- The CUDA toolkit (4.1 GB) and the global uv cache (3.9 GB) still live on
+  C:; moving them needs an admin reinstall — the user's call.
+- Uploads go through the Next.js dev/prod proxy; a whole 1,378-frame flight
+  is ~15 GB and is best registered in place with `scripts/ingest_40ft_rgb.py`
+  (or the DJI mission-folder seeder) rather than pushed through a browser.
+- Authentication is intentionally absent (single local user).
 
 ## Known simplifications (documented, not hidden)
 
 - Field area/boundary use a flat local-projection approximation
   (`survey_service.py`), fine at field scale, not geodetically exact.
-- SQLite + plain GeoJSON-in-text columns, not PostGIS. Service layer is the
-  seam for that migration later.
-- Processing job steps run synchronously in the request — no task queue yet
-  (Celery/Redis is the intended next step per the original architecture).
-- Vegetation analysis is per-image, not a stitched orthomosaic — overlapping
-  photos aren't deduplicated, so it over-samples covered ground. Real
-  photogrammetry (ODM/WebODM) would fix this; nothing here fakes that step.
+- SQLite (WAL) + plain GeoJSON-in-text columns, not PostGIS. Service layer
+  is the seam for that migration later.
+- Tier thresholds are relative to each survey's own p90 cover, so two
+  surveys are only loosely comparable; the assistant and UI say so.
+- Per-frame methods over-sample overlapping photos; the map-space methods
+  fix that at the accuracy of the direct-georeferenced mosaic.

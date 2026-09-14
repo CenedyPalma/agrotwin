@@ -6,14 +6,15 @@ never be responsible for image segmentation or precise detection — that's
 `vision_service.py` / `analysis_service.py`. This module only explains
 already-structured, already-computed results in plain language.
 
-No LLM API is wired up in this environment (no API key configured), so
-`answer_question` is a template-based responder over the structured
-context — it answers the exact question categories §18 lists (field status,
-problem areas, weed/inspection areas, survey comparison) using only real
-numbers from the DB, never inventing findings. The context-assembly
-function (`build_field_context`) is the real deliverable here: swap
-`answer_question`'s body for a real LLM call (e.g. the Claude API) later
-without changing this module's interface or any caller.
+`answer_question` asks a local Ollama model (settings.ollama_*) when one is
+reachable, and otherwise falls back to a template responder over the same
+structured context — it answers the question categories §18 lists (field
+status, problem areas, weed/inspection areas, survey comparison) using only
+real numbers from the DB, never inventing findings. It reports which of the
+two answered, so the UI never implies an LLM that isn't running. The
+context-assembly function (`build_field_context`) is the stable interface:
+another model provider plugs in beside `_query_ollama` without changing any
+caller.
 
 RAG (agricultural knowledge base, regional best practices) is intentionally
 not implemented — §18 says not to build it until needed.
@@ -38,9 +39,15 @@ TYPE_LABEL = {
 
 METHOD_LABEL = {
     "ndvi_map": "a georeferenced NDVI map built from the multispectral bands",
+    "exg_map": "an RGB vegetation index (Excess Green) measured on the georeferenced field photo map",
     "ndvi": "per-frame NDVI from the multispectral NIR/Red bands",
-    "exg": "an RGB-only vegetation index (Excess Green)",
+    "exg": "an RGB-only vegetation index (Excess Green) measured per photo",
 }
+
+TIER_RULE = (
+    "Each 5 m patch (or photo) is compared with the vegetation cover the field's own best ground reaches: "
+    "healthy = at least 80% of that cover, needs attention = 50-80%, problem = below 50%."
+)
 
 
 def _latest_result(survey: models.Survey) -> models.AnalysisResult | None:
@@ -68,6 +75,8 @@ def build_field_context(
     context["analysis_available"] = True
     context["is_mock"] = result.is_mock
     context["method"] = result.method
+    context["method_description"] = METHOD_LABEL.get(result.method, result.method)
+    context["tier_rule"] = TIER_RULE
     context["healthy_area_percent"] = result.healthy_area_percent
     context["attention_area_percent"] = result.attention_area_percent
     context["problem_area_percent"] = result.problem_area_percent
@@ -192,9 +201,9 @@ def _template_answer(question: str, context: dict) -> str:
         if prev["method"] != context["method"]:
             text += (
                 f"\n\nCaution: the two surveys were measured differently — the earlier one used "
-                f"{METHOD_LABEL[prev['method']]}, this one used {METHOD_LABEL[context['method']]} — and each "
-                "survey's tiers are relative to its own distribution, so treat this as a rough trend, not a "
-                "like-for-like change."
+                f"{METHOD_LABEL.get(prev['method'], prev['method'])}, this one used "
+                f"{METHOD_LABEL.get(context['method'], context['method'])} — and each survey's tiers are relative "
+                "to its own best-growing ground, so treat this as a rough trend, not a like-for-like change."
             )
         return text
 
@@ -204,22 +213,23 @@ def _template_answer(question: str, context: dict) -> str:
         return (
             f"{len(issues)} area(s) are flagged for a look: "
             + "; ".join(f"{TYPE_LABEL.get(i['type'], i['type'])} ({i['severity']})" for i in issues)
-            + ". None of this is a diagnosis — it's based on measured vegetation coverage from the raw photos, so ground inspection is the next step."
+            + ". None of this is a diagnosis — it's based on measured vegetation cover, so ground inspection is the next step."
         )
 
     # default: overall status
     return (
         f"{context['field_name']} ({context['crop_type']}) — survey \"{context['survey_name']}\": "
         f"🟢 {healthy}% healthy, 🟡 {attention}% needs attention, 🔴 {problem}% flagged as a problem area, "
-        f"measured with {METHOD_LABEL.get(context.get('method'), 'a vegetation index')} across the survey's frames."
+        f"measured with {METHOD_LABEL.get(context.get('method'), 'a vegetation index')}.\n\n{TIER_RULE}"
     )
 
 
-def answer_question(question: str, context: dict) -> str:
-    """Answers farmer questions using local Ollama model (llama3.2:3b), falling back to template responder."""
+def answer_question(question: str, context: dict) -> tuple[str, str]:
+    """(answer, responder): the local Ollama model when reachable, else the
+    template responder over the same structured data."""
     if context.get("analysis_available"):
         ollama_response = _query_ollama(question, context)
         if ollama_response:
-            return ollama_response
+            return ollama_response, f"ollama:{settings.ollama_model}"
 
-    return _template_answer(question, context)
+    return _template_answer(question, context), "template"

@@ -2,21 +2,24 @@
 
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { AppShell } from "@/components/layout/AppShell";
 import { AvailabilityChecklist } from "@/components/surveys/AvailabilityChecklist";
 import { ImageLightbox } from "@/components/surveys/ImageLightbox";
 import { ImportAssetPanel } from "@/components/surveys/ImportAssetPanel";
-import { groupFrames, METHOD_LABEL } from "@/lib/frames";
-import { Globe2, RefreshCw, Loader2, Map } from "lucide-react";
+import { ProcessingProgress } from "@/components/surveys/ProcessingProgress";
+import { useProcessingJob } from "@/lib/hooks/useProcessingJob";
+import { groupFrames, METHOD_DESCRIPTION, METHOD_LABEL } from "@/lib/frames";
+import { Globe2, RefreshCw, Loader2, Map, Play, Trash2 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 
 export default function SurveyDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const qc = useQueryClient();
+  const router = useRouter();
 
   const { data: survey } = useQuery({ queryKey: ["survey", id], queryFn: () => api.getSurvey(id) });
   const { data: images } = useQuery({
@@ -31,12 +34,12 @@ export default function SurveyDetailPage({ params }: { params: Promise<{ id: str
     queryKey: ["survey-boundary", id],
     queryFn: () => api.getFieldBoundary(id),
   });
-
   const { data: analysis } = useQuery({
     queryKey: ["analysis", id],
     queryFn: () => api.getAnalysis(id),
     retry: false,
   });
+  const { job, active: busy } = useProcessingJob(id);
   const frames = useMemo(() => groupFrames(images ?? []), [images]);
 
   // Deep link: /surveys/<id>?frame=<frame_key>&view=ndvi opens that frame directly.
@@ -50,15 +53,23 @@ export default function SurveyDetailPage({ params }: { params: Promise<{ id: str
   }, [linkedFrame, frames]);
   const bandCount = useMemo(() => new Set((images ?? []).map((i) => i.band)).size, [images]);
 
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["analysis", id] });
-    qc.invalidateQueries({ queryKey: ["fields"] });
-    qc.invalidateQueries({ queryKey: ["survey-assets", id] });
-    qc.invalidateQueries({ queryKey: ["survey-availability", id] });
-    qc.invalidateQueries({ queryKey: ["survey-images", id] });
-  };
-  const recompute = useMutation({ mutationFn: () => api.recomputeAnalysis(id), onSuccess: invalidate });
-  const rebuildMosaic = useMutation({ mutationFn: () => api.rebuildMosaic(id), onSuccess: invalidate });
+  const startPolling = () => qc.invalidateQueries({ queryKey: ["job", id] });
+  const process = useMutation({ mutationFn: () => api.triggerProcessing(id), onSuccess: startPolling });
+  const recompute = useMutation({ mutationFn: () => api.recomputeAnalysis(id), onSuccess: startPolling });
+  const rebuildMosaic = useMutation({ mutationFn: () => api.rebuildMosaic(id), onSuccess: startPolling });
+  const remove = useMutation({
+    mutationFn: () => api.deleteSurvey(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["surveys"] });
+      qc.invalidateQueries({ queryKey: ["fields"] });
+      router.push(boundary?.field_id ? `/fields/${boundary.field_id}` : "/surveys");
+    },
+  });
+
+  const needsProcessing = !!survey && ["PENDING", "UPLOADING", "FAILED"].includes(survey.status);
+  const hasImages = (images?.length ?? 0) > 0;
+  const showJob = !!job && (busy || job.status === "FAILED" || (survey?.status !== "COMPLETED" && job.status !== "COMPLETED"));
+  const mutationError = [process, recompute, rebuildMosaic, remove].find((m) => m.isError)?.error as Error | undefined;
 
   return (
     <AppShell>
@@ -70,32 +81,50 @@ export default function SurveyDetailPage({ params }: { params: Promise<{ id: str
               {survey?.drone_model} · {frames.length} frames
               {bandCount > 1 ? ` · ${bandCount} bands (${survey?.image_count} files)` : ""} ·{" "}
               {survey?.survey_date ? new Date(survey.survey_date).toLocaleDateString() : "—"}
-              {analysis && ` · analysed with ${METHOD_LABEL[analysis.method]}`}
+              {analysis && (
+                <span title={METHOD_DESCRIPTION[analysis.method]}> · analysed with {METHOD_LABEL[analysis.method] ?? analysis.method}</span>
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-            <Button
-              variant="outline"
-              size="sm"
-              className="sm:h-10 sm:px-4 sm:py-2 text-xs sm:text-sm"
-              onClick={() => rebuildMosaic.mutate()}
-              disabled={rebuildMosaic.isPending}
-              title="Build georeferenced RGB + NDVI/NDRE/GNDVI quick mosaics from the frames' RTK positions (takes a few minutes)"
-            >
-              {rebuildMosaic.isPending ? <Loader2 className="animate-spin" size={15} /> : <Map size={15} />}
-              <span>{rebuildMosaic.isPending ? "Building…" : "Rebuild Mosaic"}</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="sm:h-10 sm:px-4 sm:py-2 text-xs sm:text-sm"
-              onClick={() => recompute.mutate()}
-              disabled={recompute.isPending}
-              title="Recompute vegetation analysis from this survey's imagery (NDVI map when a mosaic exists, per-frame NDVI or RGB index otherwise)"
-            >
-              {recompute.isPending ? <Loader2 className="animate-spin" size={15} /> : <RefreshCw size={15} />}
-              <span>{recompute.isPending ? "Computing…" : "Recompute Analysis"}</span>
-            </Button>
+            {needsProcessing && hasImages && (
+              <Button
+                size="sm"
+                className="sm:h-10 sm:px-4 sm:py-2 text-xs sm:text-sm bg-brand hover:bg-brand/90 text-white"
+                onClick={() => process.mutate()}
+                disabled={busy || process.isPending}
+                title="Compute the field boundary, build the quick field map and analyse vegetation (runs in the background)"
+              >
+                {process.isPending || busy ? <Loader2 className="animate-spin" size={15} /> : <Play size={15} />}
+                <span>{survey?.status === "FAILED" ? "Retry Processing" : "Process Survey"}</span>
+              </Button>
+            )}
+            {!needsProcessing && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="sm:h-10 sm:px-4 sm:py-2 text-xs sm:text-sm"
+                  onClick={() => rebuildMosaic.mutate()}
+                  disabled={busy || rebuildMosaic.isPending}
+                  title="Rebuild the georeferenced RGB (+ NDVI/NDRE/GNDVI) quick mosaics from the frames' positions and re-analyse (background job, minutes)"
+                >
+                  {rebuildMosaic.isPending ? <Loader2 className="animate-spin" size={15} /> : <Map size={15} />}
+                  <span>Rebuild Mosaic</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="sm:h-10 sm:px-4 sm:py-2 text-xs sm:text-sm"
+                  onClick={() => recompute.mutate()}
+                  disabled={busy || recompute.isPending}
+                  title="Recompute vegetation analysis from this survey's imagery (background job)"
+                >
+                  {recompute.isPending ? <Loader2 className="animate-spin" size={15} /> : <RefreshCw size={15} />}
+                  <span>Recompute Analysis</span>
+                </Button>
+              </>
+            )}
             {boundary?.field_id && (
               <Link
                 href={`/fields/${boundary.field_id}/digital-twin?survey=${id}`}
@@ -104,10 +133,36 @@ export default function SurveyDetailPage({ params }: { params: Promise<{ id: str
                 <Globe2 size={15} /> Digital Twin
               </Link>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="sm:h-10 sm:px-3 sm:py-2 text-xs sm:text-sm text-muted-foreground hover:text-problem"
+              onClick={() => {
+                if (window.confirm("Delete this survey, its analysis and generated maps? Original drone files on disk are kept."))
+                  remove.mutate();
+              }}
+              disabled={busy || remove.isPending}
+              title="Delete this survey"
+            >
+              {remove.isPending ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
+            </Button>
           </div>
         </div>
-        {recompute.isError && <div className="text-sm text-problem">{(recompute.error as Error).message}</div>}
-        {rebuildMosaic.isError && <div className="text-sm text-problem">{(rebuildMosaic.error as Error).message}</div>}
+        {mutationError && <div className="text-sm text-problem">{mutationError.message}</div>}
+
+        {showJob && job && (
+          <ProcessingProgress
+            job={job}
+            title={job.steps.length > 2 ? "Creating Digital Twin" : job.steps.length === 2 ? "Rebuilding field map" : "Recomputing analysis"}
+            action={
+              job.steps.length > 2 ? (
+                <Button size="sm" variant="outline" onClick={() => process.mutate()} disabled={process.isPending}>
+                  <Play size={14} /> Retry
+                </Button>
+              ) : undefined
+            }
+          />
+        )}
 
         {availability && (
           <div className="rounded-xl border border-border bg-surface p-5">
@@ -116,7 +171,7 @@ export default function SurveyDetailPage({ params }: { params: Promise<{ id: str
           </div>
         )}
 
-        <ImportAssetPanel surveyId={id} />
+        <ImportAssetPanel surveyId={id} disabled={busy} />
 
         <div>
           <h2 className="font-semibold text-sm mb-3">
@@ -148,7 +203,13 @@ export default function SurveyDetailPage({ params }: { params: Promise<{ id: str
             ))}
           </div>
           {images && images.length === 0 && (
-            <div className="text-sm text-muted-foreground">No images uploaded for this survey yet.</div>
+            <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+              No images in this survey yet.{" "}
+              <Link href="/upload" className="text-brand hover:underline">
+                Upload drone images
+              </Link>
+              .
+            </div>
           )}
         </div>
       </div>

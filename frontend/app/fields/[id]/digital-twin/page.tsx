@@ -6,16 +6,19 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { wsenFromPolygon } from "@/lib/geo";
-import type { SurveyAsset } from "@/lib/types";
 import { useDigitalTwinStore } from "@/lib/digitalTwinStore";
 import { CesiumToolbar } from "@/components/cesium/CesiumToolbar";
 import { LayerControls } from "@/components/cesium/LayerControls";
 import { DetectionPanel } from "@/components/cesium/DetectionPanel";
 import { MethodBadge, MockDataBadge } from "@/components/dashboard/StatusPill";
 import { groupFrames } from "@/lib/frames";
+import { selectViewerAssets } from "@/lib/surveyAssets";
+import type { CursorPosition } from "@/components/cesium/CesiumViewer";
 import type { SplatStatus } from "@/components/cesium/SplatLayer";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
+import { useProcessingJob } from "@/lib/hooks/useProcessingJob";
+import { notifyHost, useHostBridge, useIsEmbedded } from "@/lib/hostBridge";
+import type { LayerKey } from "@/lib/digitalTwinStore";
 
 const CesiumViewer = dynamic(() => import("@/components/cesium/CesiumViewer"), {
   ssr: false,
@@ -58,9 +61,16 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
     queryFn: () => api.listSurveyAssets(surveyId as string),
     enabled: !!surveyId,
   });
+  // keeps the viewer current while the backend is still building this survey's products
+  const { job, active: processing } = useProcessingJob(surveyId);
 
   const [splat, setSplat] = useState<{ status: SplatStatus; detail?: string }>({ status: "idle" });
-  const onSplatStatus = useCallback((status: SplatStatus, detail?: string) => setSplat({ status, detail }), []);
+  const onSplatStatus = useCallback((status: SplatStatus, detail?: string) => {
+    setSplat({ status, detail });
+    notifyHost({ type: "SPLAT_STATUS", status, detail });
+  }, []);
+  const [cursor, setCursor] = useState<CursorPosition | null>(null);
+  const [layerError, setLayerError] = useState<string | null>(null);
 
   // Deep link: ?mode=field-map|3d-twin|photorealistic
   const setMode = useDigitalTwinStore((s) => s.setMode);
@@ -82,6 +92,51 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
   const selectedDetectionId = useDigitalTwinStore((s) => s.selectedDetectionId);
   const setSelectedDetectionId = useDigitalTwinStore((s) => s.setSelectedDetectionId);
   const mode = useDigitalTwinStore((s) => s.mode);
+  const advanced = useDigitalTwinStore((s) => s.advanced);
+
+  // Native host (the AgroTwin mobile app's WebView). No-ops in a plain browser tab.
+  const embedded = useIsEmbedded();
+  const hostHandlers = useMemo(
+    () => ({
+      onSetMode: (m: "field-map" | "3d-twin" | "photorealistic") => setMode(m),
+      onFocusZone: (zoneId: string) => setSelectedDetectionId(zoneId),
+      onSetLayer: (layer: LayerKey, visible: boolean) => {
+        const state = useDigitalTwinStore.getState();
+        const stateKey = `show${layer.charAt(0).toUpperCase()}${layer.slice(1)}` as keyof typeof state;
+        if (state[stateKey] !== visible) state.toggleLayer(layer);
+      },
+      onSetAdvanced: (on: boolean) => {
+        const state = useDigitalTwinStore.getState();
+        if (state.advanced !== on) state.toggleAdvanced();
+      },
+    }),
+    [setMode, setSelectedDetectionId]
+  );
+  useHostBridge(hostHandlers);
+
+  // Deep link: ?zone=<detection id> opens that zone's panel (used by the mobile app).
+  const requestedZone = searchParams.get("zone");
+  const detectionCount = analysis?.detections.length ?? 0;
+  useEffect(() => {
+    if (requestedZone && detectionCount > 0 && analysis?.detections.some((d) => d.id === requestedZone)) {
+      setSelectedDetectionId(requestedZone);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedZone, detectionCount]);
+
+  const viewerDataReady = !!surveyId && images !== undefined && assets !== undefined;
+  useEffect(() => {
+    if (viewerDataReady) notifyHost({ type: "VIEWER_READY", surveyId });
+  }, [viewerDataReady, surveyId]);
+  useEffect(() => {
+    notifyHost({ type: "ZONE_SELECTED", zoneId: selectedDetectionId });
+  }, [selectedDetectionId]);
+  useEffect(() => {
+    notifyHost({ type: "MODE_CHANGED", mode });
+  }, [mode]);
+  useEffect(() => {
+    if (layerError) notifyHost({ type: "LAYER_ERROR", message: layerError });
+  }, [layerError]);
 
   const boundary = field?.boundary_geojson ? JSON.parse(field.boundary_geojson) : null;
   // One map point per shutter release — a multispectral frame is 5 files at the same spot.
@@ -100,37 +155,10 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
     return { total: pitches.length, oblique, pct: Math.round((100 * oblique) / pitches.length) };
   }, [frameAnchors]);
 
-  const rasterAssets = useMemo(() => {
-    // True photogrammetry (OpenDroneMap) beats the quick direct-georeferenced
-    // products, which beat the splat-derived ones, when a survey has several.
-    const rank = (a: SurveyAsset) =>
-      a.source === "photogrammetry_odm" ? 0 : a.source === "direct_georeferencing" ? 1 : 2;
-    const best = (type: string, pred: (a: SurveyAsset) => boolean) =>
-      assets?.filter((a) => a.asset_type === type && pred(a)).sort((a, b) => rank(a) - rank(b))[0];
-    const byType = (type: string) => best(type, (a) => !!a.format?.match(/tiff?$/));
-    // A tile pyramid (build_tiles.py) keeps zooming sharp; the flat preview is the fallback.
-    const tilesFor = (type: string) => best(type, (a) => a.format === "xyz")?.public_url ?? null;
-    const toRaster = (asset: SurveyAsset | undefined) => {
-      if (!asset?.bounds_geojson || !surveyId) return null;
-      const bounds = wsenFromPolygon(JSON.parse(asset.bounds_geojson));
-      if (!bounds) return null;
-      return { previewUrl: api.assetPreviewUrl(surveyId, asset.id), bounds, tilesUrl: tilesFor(asset.asset_type) };
-    };
-    const tileset = (type: string) => best(type, (a) => !!a.public_url)?.public_url ?? null;
-    return {
-      orthomosaic: toRaster(byType("orthomosaic")),
-      ndvi: toRaster(byType("ndvi")),
-      ndre: toRaster(byType("ndre")),
-      gndvi: toRaster(byType("gndvi")),
-      dsm: toRaster(byType("dsm")),
-      // 3D Tilesets under frontend/public/models/<survey>/ (import_odm.py or build_dense.py)
-      meshUrl: tileset("model3d"),
-      meshKind: (best("model3d", (a) => !!a.public_url)?.source === "photogrammetry_odm" ? "reality" : "terrain") as
-        | "reality"
-        | "terrain",
-      pointCloudUrl: tileset("pointcloud"),
-    };
-  }, [assets, surveyId]);
+  const viewerAssets = useMemo(
+    () => selectViewerAssets(assets, (assetId) => api.assetPreviewUrl(surveyId as string, assetId)),
+    [assets, surveyId]
+  );
 
   return (
     <div className="relative h-screen w-full">
@@ -140,31 +168,36 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
         centerLon={field?.center_lon ?? null}
         images={frameAnchors}
         detections={detections}
-        orthomosaic={rasterAssets.orthomosaic}
-        ndvi={rasterAssets.ndvi}
-        ndre={rasterAssets.ndre}
-        gndvi={rasterAssets.gndvi}
-        dsm={rasterAssets.dsm}
-        meshUrl={rasterAssets.meshUrl}
-        meshKind={rasterAssets.meshKind}
-        pointCloudUrl={rasterAssets.pointCloudUrl}
+        orthomosaic={viewerAssets.orthomosaic}
+        ndvi={viewerAssets.ndvi}
+        ndre={viewerAssets.ndre}
+        gndvi={viewerAssets.gndvi}
+        dsm={viewerAssets.dsm}
+        meshUrl={viewerAssets.meshUrl}
+        meshKind={viewerAssets.meshKind}
+        pointCloudUrl={viewerAssets.pointCloudUrl}
+        vectorOverlays={viewerAssets.vectorOverlays}
         surveyId={surveyId}
         initialCamera={initialCamera}
         onSelectDetection={setSelectedDetectionId}
         onSplatStatus={onSplatStatus}
+        onCursor={advanced ? setCursor : undefined}
+        onLayerError={setLayerError}
       />
 
       {/* top bar */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-center justify-between gap-2 p-2 sm:p-4 z-30">
         <div className="pointer-events-auto flex items-center gap-2">
-          <Link
-            href={`/fields/${id}`}
-            className="flex items-center gap-1.5 sm:gap-2 rounded-lg border border-border bg-surface/90 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm font-medium shadow-lg backdrop-blur hover:bg-surface-2"
-          >
-            <ArrowLeft size={15} />
-            <span className="max-w-[100px] sm:max-w-none truncate">{field?.name ?? "Field"}</span>
-          </Link>
-          {surveys && surveys.length > 1 && surveyId && (
+          {!embedded && (
+            <Link
+              href={`/fields/${id}`}
+              className="flex items-center gap-1.5 sm:gap-2 rounded-lg border border-border bg-surface/90 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm font-medium shadow-lg backdrop-blur hover:bg-surface-2"
+            >
+              <ArrowLeft size={15} />
+              <span className="max-w-[100px] sm:max-w-none truncate">{field?.name ?? "Field"}</span>
+            </Link>
+          )}
+          {!embedded && surveys && surveys.length > 1 && surveyId && (
             <select
               value={surveyId}
               onChange={(e) => router.replace(`/fields/${id}/digital-twin?survey=${e.target.value}`)}
@@ -185,14 +218,15 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
       {/* layer controls */}
       <div className="pointer-events-none absolute right-2 sm:right-4 top-14 sm:top-20 z-20">
         <LayerControls
-          hasOrthomosaic={!!rasterAssets.orthomosaic}
-          hasNdvi={!!rasterAssets.ndvi}
-          hasNdre={!!rasterAssets.ndre}
-          hasGndvi={!!rasterAssets.gndvi}
-          hasDsm={!!rasterAssets.dsm}
-          hasMesh={!!rasterAssets.meshUrl}
-          meshKind={rasterAssets.meshKind}
-          hasPointCloud={!!rasterAssets.pointCloudUrl}
+          hasOrthomosaic={!!viewerAssets.orthomosaic}
+          hasNdvi={!!viewerAssets.ndvi}
+          hasNdre={!!viewerAssets.ndre}
+          hasGndvi={!!viewerAssets.gndvi}
+          hasDsm={!!viewerAssets.dsm}
+          hasMesh={!!viewerAssets.meshUrl}
+          meshKind={viewerAssets.meshKind}
+          hasPointCloud={!!viewerAssets.pointCloudUrl}
+          hasVectorOverlays={viewerAssets.vectorOverlays.length > 0}
         />
       </div>
 
@@ -203,20 +237,39 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
         </div>
       )}
 
-      {/* photorealistic mode status */}
-      {mode === "photorealistic" && splat.status !== "loaded" && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-20 sm:bottom-24 flex justify-center px-4">
+      {/* transient notices */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-20 sm:bottom-24 flex flex-col items-center gap-2 px-4">
+        {processing && job && (
+          <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+            <Loader2 size={13} className="animate-spin text-attention" />
+            {job.steps.find((s) => s.key === job.current_step)?.label ?? "Processing"}… layers update automatically when it finishes
+          </div>
+        )}
+        {layerError && (
+          <div className="pointer-events-auto rounded-lg border border-problem/40 bg-surface/95 px-3 py-2 text-xs text-problem shadow-lg backdrop-blur">
+            {layerError}
+          </div>
+        )}
+        {surveyId && !processing && !viewerAssets.orthomosaic && frameAnchors.length > 0 && mode === "field-map" && (
+          <div className="pointer-events-auto rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs text-muted-foreground shadow-lg backdrop-blur text-center">
+            No continuous field map yet — showing the survey&apos;s photo positions. Run processing or import an
+            orthomosaic from the{" "}
+            <Link href={`/surveys/${surveyId}`} className="text-brand hover:underline">
+              survey page
+            </Link>
+            .
+          </div>
+        )}
+        {mode === "photorealistic" && splat.status !== "loaded" && (
           <div className="pointer-events-auto rounded-lg border border-attention/40 bg-surface/95 px-3 sm:px-4 py-2 text-xs text-attention shadow-lg backdrop-blur text-center">
             {splat.status === "loading" && "Loading Gaussian-splat reconstruction…"}
             {splat.status === "missing" &&
-              "No photorealistic reconstruction exists for this survey yet — run backend/scripts/build_splats.py (GPU, ~2 h) to build one from its frames."}
+              "No photorealistic reconstruction exists for this survey yet — run backend/scripts/build_splats.py (GPU, hours) to build one from its frames."}
             {splat.status === "error" && `Could not load the reconstruction: ${splat.detail}`}
             {splat.status === "idle" && "Preparing…"}
           </div>
-        </div>
-      )}
-      {mode === "photorealistic" && splat.status === "loaded" && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-20 sm:bottom-24 flex justify-center px-4">
+        )}
+        {mode === "photorealistic" && splat.status === "loaded" && (
           <div className="rounded-lg border border-border bg-surface/90 px-3 py-1.5 text-[11px] text-muted-foreground shadow backdrop-blur text-center">
             Gaussian splats reconstructed from this survey&apos;s frames (SfM + 3DGS), geo-aligned to the RTK camera positions
             {capture && capture.oblique === 0 && (
@@ -231,8 +284,8 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
               </span>
             )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* bottom status bar */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-border bg-surface/90 px-3 py-2 sm:px-6 sm:py-3 backdrop-blur z-30">
@@ -246,10 +299,20 @@ export default function DigitalTwinPage({ params }: { params: Promise<{ id: stri
               {analysis.is_mock && <MockDataBadge />}
             </>
           )}
+          {!analysis && surveyId && !processing && (
+            <span className="text-muted-foreground">No analysis for this survey yet</span>
+          )}
         </div>
-        <div className="text-[11px] sm:text-xs text-muted-foreground hidden sm:block">
-          {images ? `${frameAnchors.length} frames` : ""}{" "}
-          {field?.area_hectares != null && `· ${field.area_hectares} ha`}
+        <div className="flex items-center gap-3 text-[11px] sm:text-xs text-muted-foreground">
+          {advanced && cursor && (
+            <span className="font-mono tabular-nums hidden sm:inline" title="Cursor position (WGS84) and terrain height">
+              {cursor.lat.toFixed(6)}, {cursor.lon.toFixed(6)}
+              {cursor.height != null && ` · ${cursor.height.toFixed(1)} m`}
+            </span>
+          )}
+          <span className="hidden sm:inline">
+            {images ? `${frameAnchors.length} frames` : ""} {field?.area_hectares != null && `· ${field.area_hectares} ha`}
+          </span>
         </div>
       </div>
     </div>

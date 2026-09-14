@@ -2,27 +2,12 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, UPLOAD_BATCH_SIZE } from "@/lib/api";
 import { AppShell } from "@/components/layout/AppShell";
-import { ProcessingProgress } from "@/components/surveys/ProcessingProgress";
 import { UploadCloud, Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useRouter } from "next/navigation";
-import type { ProcessingJob, ProcessingStep } from "@/lib/types";
-
-const STEP_DEFS: { key: string; label: string }[] = [
-  { key: "images_uploaded", label: "Images Uploaded" },
-  { key: "metadata_extracted", label: "Metadata Extracted" },
-  { key: "processing_field", label: "Processing Field" },
-  { key: "generating_orthomosaic", label: "Generating Orthomosaic" },
-  { key: "ai_analysis", label: "AI Analysis" },
-  { key: "digital_twin_ready", label: "Digital Twin Ready" },
-];
-
-function freshSteps(): ProcessingStep[] {
-  return STEP_DEFS.map((s) => ({ ...s, status: "pending" }));
-}
 
 export default function UploadPage() {
   const router = useRouter();
@@ -34,18 +19,14 @@ export default function UploadPage() {
   const [surveyName, setSurveyName] = useState("");
   const [droneModel, setDroneModel] = useState("DJI Mavic 3 Multispectral (M3M)");
   const [files, setFiles] = useState<File[]>([]);
-  const [job, setJob] = useState<ProcessingJob | null>(null);
+  const [uploaded, setUploaded] = useState(0);
 
-  function advance(steps: ProcessingStep[], key: string, status: string) {
-    const next = steps.map((s) => (s.key === key ? { ...s, status: "complete" as const } : s));
-    setJob({ id: "local", survey_id: "", status, current_step: key, steps: next });
-    return next;
-  }
+  const totalBytes = files.reduce((n, f) => n + f.size, 0);
 
   const runUpload = useMutation({
     mutationFn: async () => {
-      let steps = freshSteps();
-      setJob({ id: "local", survey_id: "", status: "PENDING", current_step: steps[0].key, steps });
+      if (!files.length) throw new Error("Select the drone images first");
+      setUploaded(0);
 
       let targetFieldId = fieldId;
       if (fieldId === "__new__") {
@@ -60,24 +41,25 @@ export default function UploadPage() {
         droneModel
       );
 
-      if (files.length) {
-        await api.uploadSurveyImages(survey.id, files);
+      // A whole flight is hundreds of files: send it in batches so each
+      // request stays small and the progress bar means something.
+      for (let i = 0; i < files.length; i += UPLOAD_BATCH_SIZE) {
+        const batch = files.slice(i, i + UPLOAD_BATCH_SIZE);
+        await api.uploadSurveyImages(survey.id, batch);
+        setUploaded(Math.min(files.length, i + batch.length));
       }
-      steps = advance(steps, "images_uploaded", "UPLOADING");
 
-      steps = advance(steps, "metadata_extracted", "PROCESSING");
-      steps = advance(steps, "processing_field", "PROCESSING");
-
-      const finalJob = await api.triggerProcessing(survey.id);
-      setJob(finalJob);
-
+      // Field boundary, quick mosaic and analysis run on the backend worker;
+      // the survey page shows the live progress.
+      await api.triggerProcessing(survey.id);
       qc.invalidateQueries({ queryKey: ["fields"] });
-      return { fieldId: targetFieldId, surveyId: survey.id };
+      qc.invalidateQueries({ queryKey: ["surveys"] });
+      return survey.id;
     },
-    onSuccess: ({ fieldId }) => {
-      setTimeout(() => router.push(`/fields/${fieldId}`), 900);
-    },
+    onSuccess: (surveyId) => router.push(`/surveys/${surveyId}`),
   });
+
+  const pct = files.length ? Math.round((100 * uploaded) / files.length) : 0;
 
   return (
     <AppShell>
@@ -86,7 +68,7 @@ export default function UploadPage() {
           <h1 className="text-xl sm:text-2xl font-semibold">Upload Survey</h1>
           <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
             Create a field/survey and import drone imagery. Processed datasets (orthomosaic, NDVI,
-            3D models) can be imported later from a survey&apos;s detail page.
+            3D models, point clouds) can be imported later from the survey&apos;s page.
           </p>
         </div>
 
@@ -115,7 +97,7 @@ export default function UploadPage() {
                 onChange={(e) => setNewFieldName(e.target.value)}
                 placeholder="Soybean Field B"
                 className="mt-1"
-                />
+              />
             </div>
           )}
 
@@ -126,44 +108,54 @@ export default function UploadPage() {
               onChange={(e) => setSurveyName(e.target.value)}
               placeholder="Survey — this flight"
               className="mt-1"
-              />
+            />
           </div>
 
           <div>
             <label className="text-xs font-medium text-muted-foreground">Drone model</label>
-            <Input
-              value={droneModel}
-              onChange={(e) => setDroneModel(e.target.value)}
-              className="mt-1"
-              />
+            <Input value={droneModel} onChange={(e) => setDroneModel(e.target.value)} className="mt-1" />
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground">Drone images (JPG)</label>
+            <label className="text-xs font-medium text-muted-foreground">Drone images (DJI JPG, multispectral TIF)</label>
             <label className="mt-1 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-surface-2 px-4 py-8 text-center text-sm text-muted-foreground hover:border-brand/50">
               <UploadCloud size={22} />
-              {files.length ? `${files.length} files selected` : "Click to select drone images"}
+              {files.length
+                ? `${files.length} files selected · ${(totalBytes / 1024 / 1024).toFixed(0)} MB`
+                : "Click to select drone images (you can select a whole flight folder's files)"}
               <input
                 type="file"
-                accept="image/jpeg,image/jpg,image/tiff"
+                accept="image/jpeg,image/jpg,image/tiff,.tif,.tiff"
                 multiple
                 className="hidden"
                 onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
               />
             </label>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Files are sent in batches of {UPLOAD_BATCH_SIZE}; an interrupted upload can be resumed by uploading the
+              same files again — already-received ones are skipped.
+            </p>
           </div>
 
           <Button size="lg" className="w-full" onClick={() => runUpload.mutate()} disabled={runUpload.isPending}>
             {runUpload.isPending ? <Loader2 className="animate-spin" /> : <Check />}
-            {runUpload.isPending ? "Processing…" : "Create Survey"}
+            {runUpload.isPending
+              ? uploaded < files.length
+                ? `Uploading ${uploaded}/${files.length} (${pct}%)…`
+                : "Starting processing…"
+              : "Create Survey"}
           </Button>
+
+          {runUpload.isPending && (
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+              <div className="h-full bg-brand transition-all" style={{ width: `${pct}%` }} />
+            </div>
+          )}
 
           {runUpload.isError && (
             <div className="text-sm text-problem">{(runUpload.error as Error).message}</div>
           )}
         </div>
-
-        {job && <ProcessingProgress job={job} />}
       </div>
     </AppShell>
   );

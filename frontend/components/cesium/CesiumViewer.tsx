@@ -10,6 +10,15 @@ import { DetectionLayer } from "./DetectionLayer";
 import { SurveyImageryLayer, type RasterAsset } from "./SurveyImageryLayer";
 import { SplatLayer, type SplatStatus } from "./SplatLayer";
 import { ModelLayer } from "./ModelLayer";
+import { VectorLayer, type VectorOverlay } from "./VectorLayer";
+import type { MeshKind } from "@/lib/surveyAssets";
+
+export interface CursorPosition {
+  lon: number;
+  lat: number;
+  /** Height of the surface under the cursor in the viewer's datum, when known. */
+  height: number | null;
+}
 
 // Token-free: Esri World Imagery (aerial) as the basemap and Esri Terrain3D
 // as global terrain. No Cesium Ion access token is used anywhere.
@@ -52,14 +61,21 @@ export interface CesiumViewerProps {
   gndvi?: RasterAsset | null;
   dsm?: RasterAsset | null;
   meshUrl?: string | null;
-  /** "reality": LOD-tiled ODM mesh (let Cesium pick LODs); "terrain": single-tile 2.5D fallback */
-  meshKind?: "reality" | "terrain";
+  /** "reality"/"imported": LOD-tiled tilesets (let Cesium pick LODs); "terrain": single-tile 2.5D fallback */
+  meshKind?: MeshKind;
   pointCloudUrl?: string | null;
+  vectorOverlays?: VectorOverlay[];
   surveyId?: string | null;
   initialCamera?: { lon: number; lat: number; height: number; heading: number; pitch: number } | null;
   onSelectDetection?: (id: string | null) => void;
   onSplatStatus?: (status: SplatStatus, detail?: string) => void;
+  /** Mouse position over the globe (Advanced view coordinate readout). */
+  onCursor?: (pos: CursorPosition | null) => void;
+  /** A 3D layer failed to load (the message names the layer). */
+  onLayerError?: (message: string | null) => void;
 }
+
+const NO_OVERLAYS: VectorOverlay[] = [];
 
 /** Owns only the Cesium Viewer lifecycle (init/cleanup — no memory leaks on
  * unmount) and composes the independent layer components. Client-side only;
@@ -78,10 +94,13 @@ export default function CesiumViewer({
   meshUrl = null,
   meshKind = "terrain",
   pointCloudUrl = null,
+  vectorOverlays = NO_OVERLAYS,
   surveyId = null,
   initialCamera = null,
   onSelectDetection,
   onSplatStatus,
+  onCursor,
+  onLayerError,
 }: CesiumViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Held in state (not a ref) so a destroyed viewer is never handed to the
@@ -105,6 +124,7 @@ export default function CesiumViewer({
   const showDsm = useDigitalTwinStore((s) => s.showDsm);
   const showMesh = useDigitalTwinStore((s) => s.showMesh);
   const showPointCloud = useDigitalTwinStore((s) => s.showPointCloud);
+  const showVectorOverlays = useDigitalTwinStore((s) => s.showVectorOverlays);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,6 +206,32 @@ export default function CesiumViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cesiumCtx, centerLat, centerLon]);
 
+  // Coordinate readout: the globe/terrain point under the mouse.
+  useEffect(() => {
+    if (!cesiumCtx || !onCursor) return;
+    const { viewer, Cesium } = cesiumCtx;
+    if (viewer.isDestroyed()) return;
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction((movement: any) => {
+      const ray = viewer.camera.getPickRay(movement.endPosition);
+      const cartesian = ray ? viewer.scene.globe.pick(ray, viewer.scene) : undefined;
+      if (!cartesian) {
+        onCursor(null);
+        return;
+      }
+      const c = Cesium.Cartographic.fromCartesian(cartesian);
+      onCursor({
+        lon: Cesium.Math.toDegrees(c.longitude),
+        lat: Cesium.Math.toDegrees(c.latitude),
+        height: Number.isFinite(c.height) ? c.height : null,
+      });
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+    return () => {
+      handler.destroy();
+      onCursor(null);
+    };
+  }, [cesiumCtx, onCursor]);
+
   const viewer = cesiumCtx?.viewer ?? null;
   const Cesium = cesiumCtx?.Cesium ?? null;
   // Layers wait for the ground height so nothing is placed twice.
@@ -262,9 +308,10 @@ export default function CesiumViewer({
         ready={ready}
         url={meshUrl}
         show={meshVisible}
-        maximumScreenSpaceError={meshKind === "reality" ? 8 : 2}
+        maximumScreenSpaceError={meshKind === "terrain" ? 2 : 8}
         groundHeight={groundH}
         onTileset={setMeshTileset}
+        onError={(m) => onLayerError?.(`3D model could not be loaded: ${m}`)}
       />
       <ModelLayer
         viewer={viewer}
@@ -273,6 +320,16 @@ export default function CesiumViewer({
         url={pointCloudUrl}
         show={showPointCloud && mode !== "photorealistic"}
         pointSize={3}
+        groundHeight={groundH}
+        onError={(m) => onLayerError?.(`Point cloud could not be loaded: ${m}`)}
+      />
+      <VectorLayer
+        viewer={viewer}
+        Cesium={Cesium}
+        ready={ready}
+        overlays={vectorOverlays}
+        show={showVectorOverlays}
+        drape={!photorealistic}
         groundHeight={groundH}
       />
       <DetectionLayer

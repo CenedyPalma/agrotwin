@@ -3,6 +3,7 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useDigitalTwinStore } from "@/lib/digitalTwinStore";
+import type { MeshKind } from "@/lib/surveyAssets";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 
@@ -27,10 +28,10 @@ function LayerToggle({
       title={hint}
     >
       <span className="flex items-center gap-2">
-        <Checkbox checked={checked} disabled={disabled} onCheckedChange={() => onChange()} />
+        <Checkbox checked={checked && !disabled} disabled={disabled} onCheckedChange={() => onChange()} />
         {label}
       </span>
-      {disabled && <span className="text-[10px] text-muted-foreground/60">soon</span>}
+      {disabled && <span className="text-[10px] text-muted-foreground/60">n/a</span>}
     </label>
   );
 }
@@ -42,9 +43,10 @@ export interface LayerControlsProps {
   hasGndvi?: boolean;
   hasDsm?: boolean;
   hasMesh?: boolean;
-  /** "reality": true-3D photogrammetry mesh (OpenDroneMap); "terrain": 2.5D heightfield fallback */
-  meshKind?: "reality" | "terrain";
+  /** "reality": true-3D photogrammetry mesh (OpenDroneMap); "imported": manually imported 3D Tiles; "terrain": 2.5D heightfield fallback */
+  meshKind?: MeshKind;
   hasPointCloud?: boolean;
+  hasVectorOverlays?: boolean;
 }
 
 export function LayerControls({
@@ -56,6 +58,7 @@ export function LayerControls({
   hasMesh,
   meshKind = "terrain",
   hasPointCloud,
+  hasVectorOverlays,
 }: LayerControlsProps) {
   const [open, setOpen] = useState(true);
 
@@ -79,6 +82,7 @@ export function LayerControls({
     showDsm,
     showMesh,
     showPointCloud,
+    showVectorOverlays,
     mode,
     toggleLayer,
   } = useDigitalTwinStore();
@@ -103,13 +107,17 @@ export function LayerControls({
               label={
                 meshKind === "reality"
                   ? advanced ? "Reality Mesh (true 3D, photogrammetry)" : "3D Reality Mesh"
-                  : advanced ? "3D Model (textured terrain)" : "3D Terrain"
+                  : meshKind === "imported"
+                    ? advanced ? "3D Model (imported 3D Tiles)" : "3D Model"
+                    : advanced ? "3D Model (textured terrain)" : "3D Terrain"
               }
               disabled={!hasMesh}
               hint={
                 meshKind === "reality"
                   ? "Full 3D textured mesh from multi-view stereo on the survey's frames (OpenDroneMap): rounded tree crowns, real vertical faces"
-                  : "Bare-earth terrain mesh reconstructed from the survey's frames, textured with the field photo map"
+                  : meshKind === "imported"
+                    ? "3D Tiles model imported from DJI Terra / Metashape / ODM, placed by its own georeference"
+                    : "Bare-earth terrain mesh reconstructed from the survey's frames, textured with the field photo map"
               }
             />
           )}
@@ -132,6 +140,14 @@ export function LayerControls({
             onChange={() => toggleLayer("problemZones")}
             label={advanced ? "Detection Zones" : "Needs Attention"}
           />
+          {hasVectorOverlays && (
+            <LayerToggle
+              checked={showVectorOverlays}
+              onChange={() => toggleLayer("vectorOverlays")}
+              label={advanced ? "Imported GeoJSON" : "Imported Boundaries"}
+              hint="Boundaries / zones imported as GeoJSON, drawn at their real position"
+            />
+          )}
           <LayerToggle
             checked={showRgbPoints}
             onChange={() => toggleLayer("rgbPoints")}
@@ -173,7 +189,7 @@ export function LayerControls({
                 onChange={() => toggleLayer("pointCloud")}
                 label="Point Cloud"
                 disabled={!hasPointCloud}
-                hint="Dense surface samples from the 3D reconstruction"
+                hint="Coloured surface points — from the 3D reconstruction or an imported LAS/LAZ cloud"
               />
               <LayerToggle checked={false} onChange={() => {}} label="Thermal" disabled hint="No thermal sensor data in this dataset" />
             </>

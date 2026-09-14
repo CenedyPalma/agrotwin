@@ -13,6 +13,7 @@ const ITEMS: { key: keyof SurveyAvailability; label: string }[] = [
   { key: "pointcloud", label: "Point Cloud" },
   { key: "gnss_ppk", label: "GNSS / PPK Files" },
   { key: "dsm", label: "Elevation Model (DSM)" },
+  { key: "vector_overlays", label: "Boundaries / Zones (GeoJSON)" },
 ];
 
 export function AvailabilityChecklist({ availability }: { availability: SurveyAvailability }) {

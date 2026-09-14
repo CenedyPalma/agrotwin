@@ -5,6 +5,7 @@ pydantic>=2.7
 pydantic-settings>=2.3
 python-multipart>=0.0.9
 Pillow>=10.3
+defusedxml>=0.7  # PIL needs this to read DJI's XMP block (gimbal/altitude/RTK fields); silently returns None without it
 shapely>=2.0
 numpy>=1.26
 opencv-python-headless>=4.9

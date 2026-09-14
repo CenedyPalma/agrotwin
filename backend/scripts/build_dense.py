@@ -45,15 +45,12 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tile_splats_spz import enu_to_geodetic  # noqa: E402
+from tile_splats_spz import enu_to_ecef_matrix, enu_to_geodetic, lonlat_to_ecef  # noqa: E402
 
 AGROTWIN = Path(__file__).resolve().parents[2]
 DB_PATH = AGROTWIN / "data" / "agrotwin.db"
 SPLATS_DIR = AGROTWIN / "data" / "splats"
 PUBLIC_MODELS = AGROTWIN / "frontend" / "public" / "models"
-SPLAT_TOOLS = next((d for d in (Path(__file__).resolve().parents[2].parent / "CesiumSplatData",
-                                Path("/media/cdev/Personal1/Development/Agro/CesiumSplatData")) if d.exists()),
-                   Path("/media/cdev/Personal1/Development/Agro/CesiumSplatData"))
 
 
 def log(msg):
@@ -171,17 +168,12 @@ def write_glb(path: Path, pos: np.ndarray, col: np.ndarray, indices: np.ndarray 
 
 
 def write_tileset(out: Path, uri: str, lo, hi, center, meta: dict, ground_y: float):
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("ts", SPLAT_TOOLS / "tile_splat.py")
-    ts = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ts)
     e, u, n = float(center[0]), float(center[1]), float(-center[2])
     lat, lon, _ = enu_to_geodetic(e, n, u, meta["lat0"], meta["lon0"], meta["h0"])
     h = u - ground_y  # ground plane on the ellipsoid (viewer has no terrain)
-    R = ts.enu_to_ecef_matrix(lon, lat)
+    R = enu_to_ecef_matrix(lon, lat)
     T = np.eye(4)
-    T[:3, :3], T[:3, 3] = R, ts.lonlat_to_ecef(lon, lat, h)
+    T[:3, :3], T[:3, 3] = R, lonlat_to_ecef(lon, lat, h)
     half = ((hi - lo) / 2).tolist()
     tileset = {
         "asset": {"version": "1.1"},
@@ -445,7 +437,11 @@ def register_assets(survey_id: str, dsm_path: Path, points_dir: Path, mesh_dir: 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--survey", required=True)
-    ap.add_argument("--source", choices=["splats", "mvs"], default="splats")
+    ap.add_argument("--source", choices=["sparse", "splats", "mvs"], default="sparse",
+                    help="sparse: the geo-aligned SfM points3D (multi-view triangulated, ~30 pts/m2 here); "
+                         "splats: centres of the trained 3DGS model; mvs: COLMAP PatchMatch (needs a CUDA pycolmap)")
+    ap.add_argument("--band-m", type=float, default=3.0,
+                    help="keep points within this many metres of the cloud's median height (drops floaters)")
     ap.add_argument("--max-image-size", type=int, default=1200)
     ap.add_argument("--voxel", type=float, default=0.10, help="point-cloud thinning (m)")
     ap.add_argument("--dsm-gsd", type=float, default=0.5)
@@ -465,16 +461,21 @@ def main():
         fused = work / "fused.ply"
         run_mvs(work, args.max_image_size, fused)
         pos, col, nrm = read_fused(fused)
-        ground_y = float(np.median(pos[:, 1]))
-        keep = np.abs(pos[:, 1] - ground_y) < 25
-        pos, col, nrm = pos[keep], col[keep], (nrm[keep] if nrm is not None else None)
+    elif args.source == "sparse":
+        # The SfM points are triangulated from several views each, so unlike the
+        # splat centres they carry a real depth constraint on a nadir-only flight
+        # (run #5's splats drifted into a 12 m slab; the SfM cloud did not).
+        pos, col = read_sparse(proj / "colmap-workspace" / "sparse" / "0")
     else:
         ply = proj / "exports" / "splat.ply"
         if not ply.exists():
             sys.exit("run build_splats.py first (needs exports/splat.ply)")
         pos, col, nrm = read_splats(ply)
-        ground_y = float(np.median(pos[:, 1]))
-    log(f"dense cloud: {len(pos)} points, ground plane y≈{ground_y:.1f} m")
+    ground_y = float(np.median(pos[:, 1]))
+    keep = np.abs(pos[:, 1] - ground_y) < args.band_m
+    log(f"dense cloud: {len(pos)} points, ground plane y≈{ground_y:.1f} m, "
+        f"{int(keep.sum())} within ±{args.band_m} m ({100 * keep.mean():.1f}%)")
+    pos, col = pos[keep], col[keep]
 
     points_dir = PUBLIC_MODELS / args.survey / "points"
     build_points(pos, col, meta, ground_y, points_dir, args.voxel)

@@ -17,6 +17,12 @@ frontend/public/models/
 frontend/public/splats/
 frontend/public/tiles/
 
+# --- Project-local caches, logs and downloaded tools (kept on E:, never committed) ---
+/.cache/
+/logs/
+/tools/
+.venv-gpu/
+
 # --- Environment & Secret Variables ---
 .env
 .env.local
@@ -37,8 +43,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
