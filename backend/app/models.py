@@ -154,15 +154,25 @@ class SurveyAsset(Base):
 
     @property
     def public_url(self) -> str | None:
-        """URL when the file is served statically by Next.js (frontend/public):
-        tile pyramids, 3D Tilesets, splats. None for backend-only files."""
-        from app.config import AGROTWIN_ROOT
+        """URL the viewer loads this asset from: files under frontend/public are
+        served statically by Next.js (tile pyramids, generated 3D Tilesets);
+        manual imports are served by the API from their import folder. None
+        for files only the backend reads."""
+        from urllib.parse import quote
 
+        from app.config import AGROTWIN_ROOT
+        from app.services.storage_service import asset_import_dir
+
+        path = self.path.resolve()
         try:
-            rel = self.path.resolve().relative_to((AGROTWIN_ROOT / "frontend" / "public").resolve())
+            return "/" + path.relative_to((AGROTWIN_ROOT / "frontend" / "public").resolve()).as_posix()
+        except ValueError:
+            pass
+        try:
+            rel = path.relative_to(asset_import_dir(self.survey_id, self.id).resolve())
         except ValueError:
             return None
-        return "/" + rel.as_posix()
+        return f"/api/surveys/{self.survey_id}/assets/{self.id}/files/{quote(rel.as_posix())}"
 
 
 class ProcessingJob(Base):
@@ -188,7 +198,7 @@ class AnalysisResult(Base):
     healthy_area_percent: Mapped[float] = mapped_column(Float, default=0)
     attention_area_percent: Mapped[float] = mapped_column(Float, default=0)
     problem_area_percent: Mapped[float] = mapped_column(Float, default=0)
-    # "ndvi" (multispectral NIR/RED bands) or "exg" (RGB-only Excess Green Index)
+    # ndvi_map | exg_map (5 m cells on a georeferenced mosaic) or ndvi | exg (one sample per frame)
     method: Mapped[str] = mapped_column(String, default="exg")
     is_mock: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

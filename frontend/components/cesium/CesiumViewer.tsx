@@ -3,6 +3,7 @@
 import type * as GeoJSON from "geojson";
 import { useEffect, useRef, useState } from "react";
 import { loadCesium } from "@/lib/loadCesium";
+import { createBasemapProvider, withTimeout } from "@/lib/basemap";
 import type { DetectionZone, SurveyImage } from "@/lib/types";
 import { useDigitalTwinStore } from "@/lib/digitalTwinStore";
 import { CesiumScene } from "./CesiumScene";
@@ -10,13 +11,25 @@ import { DetectionLayer } from "./DetectionLayer";
 import { SurveyImageryLayer, type RasterAsset } from "./SurveyImageryLayer";
 import { SplatLayer, type SplatStatus } from "./SplatLayer";
 import { ModelLayer } from "./ModelLayer";
+import { VectorLayer, type VectorOverlay } from "./VectorLayer";
+import type { MeshKind } from "@/lib/surveyAssets";
 
-// Token-free: Esri World Imagery (aerial) as the basemap and Esri Terrain3D
-// as global terrain. No Cesium Ion access token is used anywhere.
-const ESRI_IMAGERY_URL =
-  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+export interface CursorPosition {
+  lon: number;
+  lat: number;
+  /** Height of the surface under the cursor in the viewer's datum, when known. */
+  height: number | null;
+}
+
+// Token-free: Esri World Imagery (aerial, with a Sentinel-2 fallback — see
+// lib/basemap.ts) as the basemap and Esri Terrain3D as global terrain. No
+// Cesium Ion access token is used anywhere. Nothing here may block on these
+// services: on a network that resets connections to Esri (seen here through
+// Cloudflare WARP) every remote call is time-limited and falls back locally.
 const ESRI_TERRAIN_URL =
   "https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer";
+const TERRAIN_METADATA_TIMEOUT_MS = 12_000;
+const TERRAIN_SAMPLE_TIMEOUT_MS = 15_000;
 
 /** Everything this app builds (mesh, point cloud, splats) is placed with its
  * ground plane at height 0 in its own frame, and the survey's DTM heights
@@ -30,14 +43,18 @@ async function sampleGroundHeight(Cesium: any, terrainProvider: any, lon: number
   if (boundary?.type === "Polygon") {
     for (const [x, y] of (boundary as GeoJSON.Polygon).coordinates[0]) pts.push(Cesium.Cartographic.fromDegrees(x, y));
   }
-  try {
-    const sampled = await Cesium.sampleTerrainMostDetailed(terrainProvider, pts);
-    const hs = sampled.map((c: any) => c.height).filter((h: number) => Number.isFinite(h)).sort((a: number, b: number) => a - b);
-    return hs.length ? hs[Math.floor(hs.length / 2)] : 0;
-  } catch (e) {
-    console.warn("terrain sampling failed, using ellipsoid height 0", e);
+  if (terrainProvider instanceof Cesium.EllipsoidTerrainProvider) return 0;
+  const sampled = await withTimeout<any[] | null>(
+    Cesium.sampleTerrainMostDetailed(terrainProvider, pts),
+    TERRAIN_SAMPLE_TIMEOUT_MS,
+    null
+  );
+  if (!sampled) {
+    console.warn("terrain sampling failed or timed out, using ellipsoid height 0");
     return 0;
   }
+  const hs = sampled.map((c: any) => c.height).filter((h: number) => Number.isFinite(h)).sort((a: number, b: number) => a - b);
+  return hs.length ? hs[Math.floor(hs.length / 2)] : 0;
 }
 
 export interface CesiumViewerProps {
@@ -52,14 +69,21 @@ export interface CesiumViewerProps {
   gndvi?: RasterAsset | null;
   dsm?: RasterAsset | null;
   meshUrl?: string | null;
-  /** "reality": LOD-tiled ODM mesh (let Cesium pick LODs); "terrain": single-tile 2.5D fallback */
-  meshKind?: "reality" | "terrain";
+  /** "reality"/"imported": LOD-tiled tilesets (let Cesium pick LODs); "terrain": single-tile 2.5D fallback */
+  meshKind?: MeshKind;
   pointCloudUrl?: string | null;
+  vectorOverlays?: VectorOverlay[];
   surveyId?: string | null;
   initialCamera?: { lon: number; lat: number; height: number; heading: number; pitch: number } | null;
   onSelectDetection?: (id: string | null) => void;
   onSplatStatus?: (status: SplatStatus, detail?: string) => void;
+  /** Mouse position over the globe (Advanced view coordinate readout). */
+  onCursor?: (pos: CursorPosition | null) => void;
+  /** A 3D layer failed to load (the message names the layer). */
+  onLayerError?: (message: string | null) => void;
 }
+
+const NO_OVERLAYS: VectorOverlay[] = [];
 
 /** Owns only the Cesium Viewer lifecycle (init/cleanup — no memory leaks on
  * unmount) and composes the independent layer components. Client-side only;
@@ -78,10 +102,13 @@ export default function CesiumViewer({
   meshUrl = null,
   meshKind = "terrain",
   pointCloudUrl = null,
+  vectorOverlays = NO_OVERLAYS,
   surveyId = null,
   initialCamera = null,
   onSelectDetection,
   onSplatStatus,
+  onCursor,
+  onLayerError,
 }: CesiumViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Held in state (not a ref) so a destroyed viewer is never handed to the
@@ -105,6 +132,7 @@ export default function CesiumViewer({
   const showDsm = useDigitalTwinStore((s) => s.showDsm);
   const showMesh = useDigitalTwinStore((s) => s.showMesh);
   const showPointCloud = useDigitalTwinStore((s) => s.showPointCloud);
+  const showVectorOverlays = useDigitalTwinStore((s) => s.showVectorOverlays);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,17 +143,15 @@ export default function CesiumViewer({
         const Cesium = await loadCesium();
         if (cancelled || !containerRef.current) return;
 
-        const imageryProvider = new Cesium.UrlTemplateImageryProvider({
-          url: ESRI_IMAGERY_URL,
-          credit: "Esri, Maxar, Earthstar Geographics",
-          maximumLevel: 19,
-        });
+        const imageryProvider = createBasemapProvider(Cesium);
 
-        let terrainProvider: any;
-        try {
-          terrainProvider = await Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(ESRI_TERRAIN_URL);
-        } catch (e) {
-          console.warn("global terrain unavailable, falling back to the ellipsoid", e);
+        let terrainProvider: any = await withTimeout(
+          Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(ESRI_TERRAIN_URL).catch(() => null),
+          TERRAIN_METADATA_TIMEOUT_MS,
+          null
+        );
+        if (!terrainProvider) {
+          console.warn("global terrain unavailable or too slow, falling back to the ellipsoid");
           terrainProvider = new Cesium.EllipsoidTerrainProvider();
         }
         if (cancelled || !containerRef.current) return;
@@ -186,6 +212,32 @@ export default function CesiumViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cesiumCtx, centerLat, centerLon]);
 
+  // Coordinate readout: the globe/terrain point under the mouse.
+  useEffect(() => {
+    if (!cesiumCtx || !onCursor) return;
+    const { viewer, Cesium } = cesiumCtx;
+    if (viewer.isDestroyed()) return;
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction((movement: any) => {
+      const ray = viewer.camera.getPickRay(movement.endPosition);
+      const cartesian = ray ? viewer.scene.globe.pick(ray, viewer.scene) : undefined;
+      if (!cartesian) {
+        onCursor(null);
+        return;
+      }
+      const c = Cesium.Cartographic.fromCartesian(cartesian);
+      onCursor({
+        lon: Cesium.Math.toDegrees(c.longitude),
+        lat: Cesium.Math.toDegrees(c.latitude),
+        height: Number.isFinite(c.height) ? c.height : null,
+      });
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+    return () => {
+      handler.destroy();
+      onCursor(null);
+    };
+  }, [cesiumCtx, onCursor]);
+
   const viewer = cesiumCtx?.viewer ?? null;
   const Cesium = cesiumCtx?.Cesium ?? null;
   // Layers wait for the ground height so nothing is placed twice.
@@ -202,9 +254,18 @@ export default function CesiumViewer({
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="cesium-viewer-full h-full w-full" />
-      {!ready && (
+      {/* The globe shows as soon as Cesium is up; the layers wait on the terrain
+          sample by themselves, so a slow terrain service never hides the map. */}
+      {!cesiumCtx && (
         <div className="absolute inset-0 flex items-center justify-center bg-surface text-sm text-muted-foreground">
           {status}
+        </div>
+      )}
+      {cesiumCtx && !ready && (
+        <div className="pointer-events-none absolute inset-x-0 top-14 sm:top-20 flex justify-center">
+          <div className="rounded-lg border border-border bg-surface/90 px-3 py-1.5 text-xs text-muted-foreground shadow backdrop-blur">
+            Placing survey layers on the terrain…
+          </div>
         </div>
       )}
 
@@ -262,9 +323,10 @@ export default function CesiumViewer({
         ready={ready}
         url={meshUrl}
         show={meshVisible}
-        maximumScreenSpaceError={meshKind === "reality" ? 8 : 2}
+        maximumScreenSpaceError={meshKind === "terrain" ? 2 : 8}
         groundHeight={groundH}
         onTileset={setMeshTileset}
+        onError={(m) => onLayerError?.(`3D model could not be loaded: ${m}`)}
       />
       <ModelLayer
         viewer={viewer}
@@ -273,6 +335,16 @@ export default function CesiumViewer({
         url={pointCloudUrl}
         show={showPointCloud && mode !== "photorealistic"}
         pointSize={3}
+        groundHeight={groundH}
+        onError={(m) => onLayerError?.(`Point cloud could not be loaded: ${m}`)}
+      />
+      <VectorLayer
+        viewer={viewer}
+        Cesium={Cesium}
+        ready={ready}
+        overlays={vectorOverlays}
+        show={showVectorOverlays}
+        drape={!photorealistic}
         groundHeight={groundH}
       />
       <DetectionLayer

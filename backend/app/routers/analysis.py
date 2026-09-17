@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import get_db
-from app.services import analysis_service, llm_service
+from app.services import job_runner, llm_service, processing_service
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -46,19 +46,18 @@ def get_analysis(survey_id: str, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/{survey_id}/recompute", response_model=schemas.AnalysisResultOut)
+@router.post("/{survey_id}/recompute", response_model=schemas.ProcessingJobOut, status_code=202)
 def recompute_analysis(survey_id: str, db: Session = Depends(get_db)):
-    """(Re)computes vegetation analysis from the survey's real RGB images
-    (Excess Green Index — see analysis_service.py). No mock/demo data."""
+    """Queues a fresh vegetation analysis from the survey's own imagery (see
+    analysis_service). Poll GET /api/surveys/{id}/job for progress."""
     survey = db.get(models.Survey, survey_id)
     if not survey:
         raise HTTPException(404, "Survey not found")
-
-    result = analysis_service.analyze_survey(db, survey, survey.field)
-    if not result:
-        raise HTTPException(422, "Not enough geotagged RGB images to compute analysis")
-    db.commit()
-    return get_analysis(survey_id, db)
+    try:
+        job = job_runner.enqueue(db, survey, processing_service.ANALYSIS_STEPS, processing_service.run_analysis_job)
+    except job_runner.JobAlreadyRunning as exc:
+        raise HTTPException(409, "This survey is being processed — wait for the current job to finish") from exc
+    return processing_service.job_to_dict(job)
 
 
 class AskRequest(BaseModel):
@@ -67,14 +66,14 @@ class AskRequest(BaseModel):
 
 @router.post("/{survey_id}/ask")
 def ask_assistant(survey_id: str, payload: AskRequest, db: Session = Depends(get_db)):
-    """Farmer-friendly Q&A grounded in this survey's real structured analysis.
-    See llm_service.py — no LLM call is made yet, but the context-assembly
-    interface here is exactly what a real LLM integration would plug into."""
+    """Farmer-friendly Q&A grounded in this survey's structured analysis. The
+    response names its responder: the local Ollama model when reachable, the
+    template responder otherwise (see llm_service)."""
     survey = db.get(models.Survey, survey_id)
     if not survey:
         raise HTTPException(404, "Survey not found")
 
     result = max(survey.analysis_results, key=lambda r: r.created_at, default=None)
     context = llm_service.build_field_context(survey, survey.field, result)
-    answer = llm_service.answer_question(payload.question, context)
-    return {"question": payload.question, "answer": answer, "context_used": context}
+    answer, responder = llm_service.answer_question(payload.question, context)
+    return {"question": payload.question, "answer": answer, "responder": responder, "context_used": context}

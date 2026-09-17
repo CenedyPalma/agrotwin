@@ -1,40 +1,42 @@
 """Agricultural analysis generation — computed from the survey's own imagery.
 
-Three real measurement paths, chosen per survey by what actually exists:
+Measurement, chosen per survey by what exists (never mixed in one result):
 
-- method="ndvi_map": a georeferenced NDVI quick mosaic exists
-  (mosaic_service). The field is gridded into 5 m cells; each cell's
-  vegetation coverage (share of pixels with NDVI above the live-vegetation
-  threshold) is measured in MAP space — one measurement per patch of
-  ground, so overlapping photos no longer over-sample anything, and the
-  healthy/attention/problem numbers are true area percentages.
-- method="ndvi": multispectral frames but no mosaic. Per-frame NDVI from the
-  raw bands (calibrated, registered); one sample per frame.
-- method="exg": RGB-only. Per-image Excess Green Index (vision_service).
+- method="ndvi_map": a georeferenced NDVI mosaic exists. The field is gridded
+  into 5 m cells measured in map space — one measurement per patch of ground,
+  so overlapping photos don't over-sample anything and the tier shares are
+  true area percentages.
+- method="exg_map": an RGB-only survey with an RGB orthomosaic. Same 5 m
+  cells, vegetation classified per pixel with the Excess Green Index.
+- method="ndvi": multispectral frames but no NDVI mosaic — one sample per frame.
+- method="exg": RGB frames but no orthomosaic — one sample per frame.
 
-Per-frame stats are persisted on the frames in every case (they drive the
-Crop Density point layer).
+Per-frame stats are always persisted on the frames (they drive the Crop
+Density point layer).
+
+Tiers. Each cell's (or frame's) vegetation cover is compared with the cover
+the field's own best-developed ground reaches — its 90th percentile, i.e.
+what this crop achieves here at this growth stage and in this light:
+    healthy     >= 80 % of that reference
+    attention   50–80 %
+    problem     <  50 %
+A uniform field therefore reads mostly healthy and a patchy one does not; the
+shares are measured, not fixed by construction. Because the reference adapts
+to growth stage, two surveys are only loosely comparable — the method is
+recorded on every result so the UI and assistant can say so.
 
 Nothing here is randomly generated. If there isn't enough real data,
 `analyze_survey` returns None and writes nothing.
 
-Documented limits:
-- "ndvi"/"exg" are per-frame: overlapping photos aren't deduplicated, so
-  they over-sample covered ground. "ndvi_map" fixes that, at the accuracy
-  of the direct-georeferencing mosaic (see mosaic_service).
-- Neither index identifies weed species, disease, or pest damage. Zones
-  are labeled only by measurable characteristics (low vegetation density /
-  bare soil / patchy vegetation), never by diagnosis.
-- Healthy/attention/problem tiers are percentiles of this survey's own
-  distribution, not hardcoded absolutes, so a different field or lighting
-  re-baselines automatically. The two methods are therefore NOT directly
-  comparable across surveys — the method is recorded on every result so
-  the UI and assistant can say so.
+Neither index identifies weed species, disease, or pest damage. Zones are
+labeled only by measurable characteristics (bare soil / low crop density /
+patchy vegetation), never by diagnosis.
 """
 
 import json
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -44,12 +46,22 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.services import multispectral_service
-from app.services.vision_service import analyze_image_vegetation
+from app.services.vision_service import VEGETATION_THRESHOLD, analyze_image_vegetation
 
-# ~5m square footprint per sample point (degrees at mid-latitude). Photos on
+# ~5 m square footprint per frame sample (degrees at mid-latitude). Photos on
 # the same flight line overlap heavily, so neighbouring flagged frames merge
 # into one contiguous zone instead of a scatter of separate dots.
 ZONE_BUFFER_DEG = 0.00004
+
+CELL_M = 5.0  # map-space analysis cell size (metres)
+MIN_VALID_FRACTION = 0.5  # a cell needs this much raster coverage to count
+READ_STRIP_PX = 2048  # rows of raster read at once
+
+REFERENCE_PERCENTILE = 90
+HEALTHY_RATIO = 0.8
+PROBLEM_RATIO = 0.5
+SEVERE_RATIO = 0.25
+MIN_REFERENCE_COVER = 0.05  # below this nothing is growing anywhere; don't rescale noise
 
 SAFE_ACTIONS = {
     "bare_soil": "Inspect area for emergence issues",
@@ -57,9 +69,27 @@ SAFE_ACTIONS = {
     "patchy_vegetation": "Uneven vegetation detected — compare with previous survey",
 }
 
+SOURCE_RANK = {"photogrammetry_odm": 0, "direct_georeferencing": 1, "manual_import": 2}
+
 log = logging.getLogger(__name__)
 
 Sample = tuple[models.SurveyImage, float]  # (anchor image with GPS, vegetation_fraction)
+
+
+@dataclass
+class Tiers:
+    ratio: np.ndarray  # cover / reference cover
+    healthy: np.ndarray
+    attention: np.ndarray
+    problem: np.ndarray
+
+
+def tier_cover(fractions: np.ndarray) -> Tiers:
+    reference = max(float(np.percentile(fractions, REFERENCE_PERCENTILE)), MIN_REFERENCE_COVER)
+    ratio = fractions / reference
+    healthy = ratio >= HEALTHY_RATIO
+    problem = ratio < PROBLEM_RATIO
+    return Tiers(ratio, healthy, ~healthy & ~problem, problem)
 
 
 def _classify_zone_type(vegetation_fraction: float) -> str:
@@ -68,6 +98,48 @@ def _classify_zone_type(vegetation_fraction: float) -> str:
     if vegetation_fraction < 0.35:
         return "low_crop_density"
     return "patchy_vegetation"
+
+
+def _new_result(db: Session, survey: models.Survey, tiers: Tiers, method: str) -> models.AnalysisResult:
+    total = len(tiers.ratio)
+    result = models.AnalysisResult(
+        survey_id=survey.id,
+        healthy_area_percent=round(100 * int(tiers.healthy.sum()) / total, 1),
+        attention_area_percent=round(100 * int(tiers.attention.sum()) / total, 1),
+        problem_area_percent=round(100 * int(tiers.problem.sum()) / total, 1),
+        method=method,
+        is_mock=False,
+    )
+    db.add(result)
+    db.flush()
+    return result
+
+
+def _add_zone(db: Session, result: models.AnalysisResult, geometry, members: list[tuple[float, float]], problem: bool) -> None:
+    """members: (vegetation cover, cover/reference ratio) of the cells or frames inside the zone."""
+    if not members or (not problem and len(members) < 2):
+        return  # one slightly-below-reference cell is noise, not an area worth walking to
+    worst_cover = min(c for c, _ in members)
+    worst_ratio = min(r for _, r in members)
+    # how clearly the zone falls short of the field's healthy cover, plus a little for its size
+    shortfall = min(max((HEALTHY_RATIO - float(np.mean([r for _, r in members]))) / HEALTHY_RATIO, 0.0), 1.0)
+    confidence = round(min(0.95, 0.5 + 0.35 * shortfall + 0.02 * min(len(members), 5)), 2)
+    severity = ("high" if worst_ratio < SEVERE_RATIO else "medium") if problem else "low"
+    zone_type = _classify_zone_type(worst_cover)
+    db.add(
+        models.DetectionZone(
+            analysis_result_id=result.id,
+            type=zone_type,
+            severity=severity,
+            confidence=confidence,
+            geometry_geojson=json.dumps(mapping(geometry)),
+            recommended_action=SAFE_ACTIONS[zone_type],
+        )
+    )
+
+
+def _parts(geometry) -> list:
+    return list(geometry.geoms) if hasattr(geometry, "geoms") else [geometry]
 
 
 def _group_frames(survey: models.Survey) -> dict[str, list[models.SurveyImage]]:
@@ -85,17 +157,21 @@ def _anchor(rows: list[models.SurveyImage]) -> models.SurveyImage | None:
     return next((r for r in with_gps if r.band == "RGB"), with_gps[0])
 
 
-def _measure_frames(frames: dict[str, list[models.SurveyImage]]) -> tuple[list[Sample], str]:
+def _measure_frames(frames: dict[str, list[models.SurveyImage]], remeasure: bool) -> tuple[list[Sample], str]:
     """Returns (samples, method). Uses NDVI for every frame when the survey
-    has multispectral bands; never mixes the two indices in one analysis."""
+    has multispectral bands; never mixes the two indices in one analysis.
+    Frames measured by an earlier run are reused unless `remeasure`."""
     has_ms = any({"NIR", "RED"} <= {r.band for r in rows} for rows in frames.values())
     samples: list[Sample] = []
 
     for n, rows in enumerate(frames.values(), 1):
-        if n % 25 == 0:
+        if n % 100 == 0:
             log.info("measured %d/%d frames", n, len(frames))
         anchor = _anchor(rows)
         if anchor is None:
+            continue
+        if not remeasure and anchor.vegetation_fraction is not None and (anchor.ndvi_mean is not None or not has_ms):
+            samples.append((anchor, anchor.vegetation_fraction))
             continue
         bands = {r.band: r.path for r in rows}
 
@@ -130,184 +206,156 @@ def _measure_frames(frames: dict[str, list[models.SurveyImage]]) -> tuple[list[S
     return samples, ("ndvi" if has_ms else "exg")
 
 
-def analyze_survey(db: Session, survey: models.Survey, field: models.Field) -> models.AnalysisResult | None:
-    samples, method = _measure_frames(_group_frames(survey))
+def analyze_survey(
+    db: Session, survey: models.Survey, field: models.Field, remeasure_frames: bool = False
+) -> models.AnalysisResult | None:
+    samples, frame_method = _measure_frames(_group_frames(survey), remeasure_frames)
 
-    ndvi_mosaic = next(
-        (a for a in survey.assets if a.asset_type == "ndvi" and a.source == "direct_georeferencing"), None
-    )
-    if ndvi_mosaic is not None and ndvi_mosaic.path.exists():
-        result = analyze_from_mosaic(db, survey, field, ndvi_mosaic.path)
+    raster = _analysis_raster(survey, multispectral=frame_method == "ndvi")
+    if raster is not None:
+        result = analyze_from_raster(db, survey, field, *raster)
         if result is not None:
             return result
 
     if not samples:
         return None
 
-    fractions = np.array([f for _, f in samples])
-    p20 = float(np.percentile(fractions, 20))
-    p50 = float(np.percentile(fractions, 50))
-    spread = max(float(np.std(fractions)), 1e-6)
-
-    healthy = int((fractions > p50).sum())
-    attention = int(((fractions > p20) & (fractions <= p50)).sum())
-    total = len(samples)
-    problem = total - healthy - attention
-
-    result = models.AnalysisResult(
-        survey_id=survey.id,
-        healthy_area_percent=round(100 * healthy / total, 1),
-        attention_area_percent=round(100 * attention / total, 1),
-        problem_area_percent=round(100 * problem / total, 1),
-        method=method,
-        is_mock=False,
-    )
-    db.add(result)
-    db.flush()
-
-    flagged = [(img, f) for img, f in samples if f <= p20]
-    _create_clustered_zones(db, result, flagged, p20, spread)
-
+    tiers = tier_cover(np.array([f for _, f in samples]))
+    result = _new_result(db, survey, tiers, frame_method)
+    for mask, problem in ((tiers.attention, False), (tiers.problem, True)):
+        members = [(img, f, float(r)) for (img, f), r, m in zip(samples, tiers.ratio, mask) if m]
+        if not members:
+            continue
+        merged = unary_union([Point(img.lon, img.lat).buffer(ZONE_BUFFER_DEG, cap_style=3) for img, _, _ in members])
+        for cluster in _parts(merged):
+            inside = [(f, r) for img, f, r in members if cluster.intersects(Point(img.lon, img.lat))]
+            _add_zone(db, result, cluster, inside, problem)
     db.flush()
     return result
 
 
-def _create_clustered_zones(
-    db: Session, result: models.AnalysisResult, flagged: list[Sample], p20: float, spread: float
-) -> None:
-    if not flagged:
-        return
-
-    buffers = [Point(img.lon, img.lat).buffer(ZONE_BUFFER_DEG, cap_style=3) for img, _ in flagged]
-    merged = unary_union(buffers)
-    clusters = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
-
-    for cluster_poly in clusters:
-        members = [(img, f) for img, f in flagged if cluster_poly.intersects(Point(img.lon, img.lat))]
-        if not members:
-            continue
-
-        member_fractions = [f for _, f in members]
-        worst = min(member_fractions)
-        avg_z = float(np.mean([(p20 - f) / spread for f in member_fractions]))
-        confidence = round(min(0.95, 0.55 + min(max(avg_z, 0), 3) * 0.1 + min(len(members), 5) * 0.02), 2)
-
-        severity = "high" if worst < p20 * 0.5 else "medium" if worst < p20 * 0.85 else "low"
-        zone_type = _classify_zone_type(worst)
-
-        db.add(
-            models.DetectionZone(
-                analysis_result_id=result.id,
-                type=zone_type,
-                severity=severity,
-                confidence=confidence,
-                geometry_geojson=json.dumps(mapping(cluster_poly)),
-                recommended_action=SAFE_ACTIONS[zone_type],
-            )
-        )
-
-
 # ---------------------------------------------------------------------------
-# Map-space analysis on the NDVI quick mosaic
+# Map-space analysis on a georeferenced raster
 # ---------------------------------------------------------------------------
 
-CELL_M = 5.0  # analysis cell size (metres)
-MIN_VALID_FRACTION = 0.5  # a cell needs this much mosaic coverage to count
+
+def _analysis_raster(survey: models.Survey, multispectral: bool) -> tuple[Path, str] | None:
+    """The raster to measure in map space: the NDVI mosaic for multispectral
+    surveys, the RGB orthomosaic for RGB-only ones (photogrammetry preferred)."""
+    asset_type, method = ("ndvi", "ndvi_map") if multispectral else ("orthomosaic", "exg_map")
+    candidates = [
+        a for a in survey.assets
+        if a.asset_type == asset_type and (a.format or "").lower() in ("tif", "tiff") and a.path.exists()
+    ]
+    best = min(candidates, key=lambda a: SOURCE_RANK.get(a.source, 3), default=None)
+    return (best.path, method) if best else None
 
 
-def analyze_from_mosaic(db: Session, survey: models.Survey, field: models.Field, ndvi_path: Path) -> models.AnalysisResult | None:
+def _ndvi_cover(data: np.ndarray, nodata) -> tuple[np.ndarray, np.ndarray]:
+    band = data[0].astype(np.float32)
+    valid = ~np.isnan(band)
+    if nodata is not None and not np.isnan(nodata):
+        valid &= band != nodata
+    return valid, valid & (band > multispectral_service.NDVI_VEGETATION_THRESHOLD)
+
+
+def _exg_cover(data: np.ndarray, nodata) -> tuple[np.ndarray, np.ndarray]:
+    if data.shape[0] >= 4:
+        valid = data[3] > 0
+    elif nodata is not None:
+        valid = ~np.all(data[:3] == nodata, axis=0)
+    else:
+        valid = np.any(data[:3] > 0, axis=0)
+    rgb = data[:3].astype(np.float32)
+    total = rgb.sum(axis=0)
+    total[total == 0] = 1.0
+    exg = (2 * rgb[1] - rgb[0] - rgb[2]) / total  # = 2g - r - b on chromaticity coordinates
+    return valid, valid & (exg > VEGETATION_THRESHOLD)
+
+
+def _raster_cells(path: Path, method: str):
+    """(cells, transform, crs, cell_px) with cells = (row, col, vegetation cover)
+    for every CELL_M square that has enough valid pixels, or None when the
+    raster isn't the kind the method measures. Reads strips of cell rows, so a
+    multi-gigapixel orthomosaic is never held in memory."""
     import rasterio
+    from rasterio.windows import Window
+
+    with rasterio.open(path) as src:
+        if method == "exg_map":
+            if src.count < 3 or src.dtypes[0] != "uint8":
+                return None
+            cover_fn, bands = _exg_cover, list(range(1, min(src.count, 4) + 1))
+        else:
+            if src.count != 1 or not src.dtypes[0].startswith("float"):
+                return None
+            cover_fn, bands = _ndvi_cover, [1]
+
+        tf, crs = src.transform, src.crs
+        cell_px = max(2, int(round(CELL_M / abs(tf.a))))
+        rows, cols = src.height // cell_px, src.width // cell_px
+        if rows == 0 or cols == 0:
+            return None
+        strip = max(1, READ_STRIP_PX // cell_px)
+        cells: list[tuple[int, int, float]] = []
+        for r0 in range(0, rows, strip):
+            nr = min(strip, rows - r0)
+            data = src.read(bands, window=Window(0, r0 * cell_px, cols * cell_px, nr * cell_px))
+            valid, veg = cover_fn(data, src.nodata)
+            n_valid = valid.reshape(nr, cell_px, cols, cell_px).sum(axis=(1, 3))
+            n_veg = veg.reshape(nr, cell_px, cols, cell_px).sum(axis=(1, 3))
+            for r, c in zip(*np.nonzero(n_valid >= MIN_VALID_FRACTION * cell_px * cell_px)):
+                cells.append((r0 + int(r), int(c), float(n_veg[r, c] / n_valid[r, c])))
+    return cells, tf, crs, cell_px
+
+
+def analyze_from_raster(
+    db: Session, survey: models.Survey, field: models.Field, path: Path, method: str
+) -> models.AnalysisResult | None:
     from rasterio.warp import transform as warp_transform
 
-    from app.services.multispectral_service import NDVI_VEGETATION_THRESHOLD
-
-    with rasterio.open(ndvi_path) as src:
-        ndvi = src.read(1)
-        tf = src.transform
-        crs = src.crs
-    gsd = abs(tf.a)
-    cell_px = max(2, int(round(CELL_M / gsd)))
-    H, W = ndvi.shape
-    rows, cols = H // cell_px, W // cell_px
-    if rows == 0 or cols == 0:
+    measured = _raster_cells(path, method)
+    if measured is None:
         return None
-
-    boundary = shape(json.loads(field.boundary_geojson)) if field.boundary_geojson else None
-
-    cells = []  # (r, c, veg_fraction, mean_ndvi)
-    for r in range(rows):
-        for c in range(cols):
-            block = ndvi[r * cell_px:(r + 1) * cell_px, c * cell_px:(c + 1) * cell_px]
-            valid = ~np.isnan(block)
-            if valid.mean() < MIN_VALID_FRACTION:
-                continue
-            vals = block[valid]
-            cells.append((r, c, float((vals > NDVI_VEGETATION_THRESHOLD).mean()), float(vals.mean())))
+    cells, tf, crs, cell_px = measured
     if len(cells) < 10:
         return None
 
-    # cell centres -> lon/lat, keep those inside the field boundary
-    xs = [tf.c + (c + 0.5) * cell_px * tf.a for _, c, _, _ in cells]
-    ys = [tf.f + (r + 0.5) * cell_px * tf.e for r, _, _, _ in cells]
+    # cell centres -> lon/lat, keep those inside the field
+    xs = [tf.c + (c + 0.5) * cell_px * tf.a for _, c, _ in cells]
+    ys = [tf.f + (r + 0.5) * cell_px * tf.e for r, _, _ in cells]
     lons, lats = warp_transform(crs, "EPSG:4326", xs, ys)
-    if boundary is not None:
-        field_area = boundary.buffer(0.00007)  # camera-position hull + ~8 m: half a frame footprint beyond the outermost cameras
+    if field.boundary_geojson:
+        # camera-position hull + ~8 m: half a frame footprint beyond the outermost cameras
+        field_area = shape(json.loads(field.boundary_geojson)).buffer(0.00007)
         keep = [i for i, (lo, la) in enumerate(zip(lons, lats)) if field_area.contains(Point(lo, la))]
         if len(keep) >= 10:
             cells = [cells[i] for i in keep]
 
-    fractions = np.array([f for _, _, f, _ in cells])
-    p20 = float(np.percentile(fractions, 20))
-    p50 = float(np.percentile(fractions, 50))
-    spread = max(float(np.std(fractions)), 1e-6)
-    healthy = int((fractions > p50).sum())
-    attention = int(((fractions > p20) & (fractions <= p50)).sum())
-    total = len(cells)
-    problem = total - healthy - attention
+    tiers = tier_cover(np.array([f for _, _, f in cells]))
+    result = _new_result(db, survey, tiers, method)
 
-    result = models.AnalysisResult(
-        survey_id=survey.id,
-        healthy_area_percent=round(100 * healthy / total, 1),
-        attention_area_percent=round(100 * attention / total, 1),
-        problem_area_percent=round(100 * problem / total, 1),
-        method="ndvi_map",
-        is_mock=False,
-    )
-    db.add(result)
-    db.flush()
-
-    # zones: union of bottom-tier cells, as real ground polygons
-    flagged = [(r, c, f) for r, c, f, _ in cells if f <= p20]
-    polys = []
-    for r, c, f in flagged:
-        x0, y1 = tf.c + c * cell_px * tf.a, tf.f + r * cell_px * tf.e
-        x1, y0 = x0 + cell_px * tf.a, y1 + cell_px * tf.e
-        corner_lons, corner_lats = warp_transform(crs, "EPSG:4326", [x0, x1], [y0, y1])
-        polys.append((box(corner_lons[0], corner_lats[0], corner_lons[1], corner_lats[1]), f))
-    if polys:
+    for mask, problem in ((tiers.attention, False), (tiers.problem, True)):
+        flagged = [(r, c, f, float(ratio)) for (r, c, f), ratio, m in zip(cells, tiers.ratio, mask) if m]
+        if not flagged:
+            continue
+        x0 = [tf.c + c * cell_px * tf.a for _, c, _, _ in flagged]
+        y1 = [tf.f + r * cell_px * tf.e for r, _, _, _ in flagged]
+        x1 = [x + cell_px * tf.a for x in x0]
+        y0 = [y + cell_px * tf.e for y in y1]
+        lo0, la0 = warp_transform(crs, "EPSG:4326", x0, y0)
+        lo1, la1 = warp_transform(crs, "EPSG:4326", x1, y1)
+        polys = [(box(lo0[i], la0[i], lo1[i], la1[i]), f, ratio) for i, (_, _, f, ratio) in enumerate(flagged)]
         # dilate a little so diagonally-adjacent cells merge into one zone
         eps = abs(polys[0][0].bounds[2] - polys[0][0].bounds[0]) * 0.15
-        merged = unary_union([p.buffer(eps, join_style=2) for p, _ in polys]).buffer(-eps, join_style=2)
-        clusters = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
-        for cluster in clusters:
-            members = [f for p, f in polys if cluster.intersects(p.centroid)]
-            if not members:
-                continue
-            worst = min(members)
-            avg_z = float(np.mean([(p20 - f) / spread for f in members]))
-            confidence = round(min(0.95, 0.55 + min(max(avg_z, 0), 3) * 0.1 + min(len(members), 5) * 0.02), 2)
-            severity = "high" if worst < p20 * 0.5 else "medium" if worst < p20 * 0.85 else "low"
-            zone_type = _classify_zone_type(worst)
-            db.add(
-                models.DetectionZone(
-                    analysis_result_id=result.id,
-                    type=zone_type,
-                    severity=severity,
-                    confidence=confidence,
-                    geometry_geojson=json.dumps(mapping(cluster.simplify(0.000005))),
-                    recommended_action=SAFE_ACTIONS[zone_type],
-                )
-            )
+        merged = unary_union([p.buffer(eps, join_style=2) for p, _, _ in polys]).buffer(-eps, join_style=2)
+        for cluster in _parts(merged):
+            inside = [(f, ratio) for p, f, ratio in polys if cluster.intersects(p.centroid)]
+            _add_zone(db, result, cluster.simplify(0.000005), inside, problem)
+
     db.flush()
-    log.info("map-space analysis: %d cells of %.0f m, %d flagged", total, CELL_M, len(flagged))
+    log.info(
+        "%s: %d cells of %.0f m — %.1f%% healthy / %.1f%% attention / %.1f%% problem",
+        method, len(cells), CELL_M, result.healthy_area_percent, result.attention_area_percent, result.problem_area_percent,
+    )
     return result

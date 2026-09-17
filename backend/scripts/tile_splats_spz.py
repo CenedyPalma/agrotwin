@@ -27,7 +27,6 @@ ENU frame at --lon/--lat/--h). Run with the splat venv (needs plyfile+numpy).
 
 import argparse
 import gzip
-import importlib.util
 import json
 import math
 import struct
@@ -36,10 +35,6 @@ from pathlib import Path
 
 import numpy as np
 from plyfile import PlyData
-
-SPLAT_TOOLS = next((d for d in (Path(__file__).resolve().parents[2].parent / "CesiumSplatData",
-                                Path("/media/cdev/Personal1/Development/Agro/CesiumSplatData")) if d.exists()),
-                   Path("/media/cdev/Personal1/Development/Agro/CesiumSplatData"))
 
 COLOR_SCALE = 0.15
 FRACTIONAL_BITS = 12
@@ -75,6 +70,15 @@ def enu_to_geodetic(e, n, u, lat0, lon0, h0):
         h = p / math.cos(lat) - nn
         lat = math.atan2(z, p * (1 - EARTH_E2 * nn / (nn + h)))
     return math.degrees(lat), math.degrees(lon), h
+
+
+def lonlat_to_ecef(lon, lat, h):
+    return _geodetic_to_ecef(lat, lon, h)
+
+
+def enu_to_ecef_matrix(lon, lat):
+    """Columns are the ENU basis vectors (E, N, U) expressed in ECEF."""
+    return _enu_matrix(lat, lon).T
 
 
 def _u8(x: np.ndarray) -> np.ndarray:
@@ -243,11 +247,6 @@ def main():
                     help="drop near-vertical, highly elongated Gaussians (nadir-capture depth artefacts)")
     args = ap.parse_args()
 
-    # reuse the ENU/ECEF placement maths from the reference tiler
-    spec = importlib.util.spec_from_file_location("tile_splat", SPLAT_TOOLS / "tile_splat.py")
-    ts = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ts)
-
     pos, f_dc, f_rest, opacity, scale, rot = read_ply(Path(args.ply))
     keep = prune_floaters(pos, opacity, scale, args.ground_band, args.min_opacity, args.max_scale)
     if args.prune_needles:
@@ -285,9 +284,9 @@ def main():
     half = ((hi - lo) / 2).tolist()
     yaw = math.radians(args.yaw_deg)
     cy, sy = math.cos(yaw), math.sin(yaw)
-    R = ts.enu_to_ecef_matrix(lon, lat) @ np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    R = enu_to_ecef_matrix(lon, lat) @ np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
     T = np.eye(4)
-    T[:3, :3], T[:3, 3] = R, ts.lonlat_to_ecef(lon, lat, h)
+    T[:3, :3], T[:3, 3] = R, lonlat_to_ecef(lon, lat, h)
     gltf_exts = ["KHR_gaussian_splatting", "KHR_gaussian_splatting_compression_spz_2"]
     tileset = {
         "asset": {"version": "1.1", "tilesetVersion": "1.0.0"},

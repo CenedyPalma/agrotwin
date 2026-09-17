@@ -10,6 +10,7 @@ before this is trusted at larger scale.
 import json
 import math
 import re
+from datetime import datetime
 from pathlib import Path
 
 from shapely.geometry import MultiPoint, mapping
@@ -25,6 +26,8 @@ EARTH_RADIUS_M = 6371000.0
 # second apart, so the frame key is <mission folder>:<seq>, not the timestamp.
 DJI_FRAME_RE = re.compile(r"^DJI_\d{14}_(\d{4})_(D|MS_G|MS_R|MS_RE|MS_NIR)\.(jpe?g|tiff?)$", re.IGNORECASE)
 DJI_BAND_BY_SUFFIX = {"D": "RGB", "MS_G": "GREEN", "MS_R": "RED", "MS_RE": "RED_EDGE", "MS_NIR": "NIR"}
+DJI_STAMP_RE = re.compile(r"^DJI_(\d{14})_", re.IGNORECASE)
+FRAME_PAIR_WINDOW_S = 3  # an M3M release's RGB JPG and band TIFs are stamped up to ~2 s apart
 
 # Non-image files a DJI mission folder ships alongside the frames.
 GNSS_ASSET_TYPES = {
@@ -74,6 +77,40 @@ def classify_dji_file(path: Path) -> tuple[str | None, str]:
     if m:
         return f"{path.parent.name}:{m.group(1)}", DJI_BAND_BY_SUFFIX[m.group(2).upper()]
     return None, "RGB" if path.suffix.lower() in (".jpg", ".jpeg") else "GRAY"
+
+
+def _dji_stamp(name: str) -> datetime | None:
+    m = DJI_STAMP_RE.match(name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def classify_uploaded_file(db: Session, survey: models.Survey, path: Path) -> tuple[str | None, str]:
+    """classify_dji_file for browser uploads. Those all land in one folder, so
+    the mission folder can't tell apart sequence numbers that restart with
+    every mission (battery swap); a shutter release is instead the same
+    sequence number within a few seconds."""
+    m = DJI_FRAME_RE.match(path.name)
+    if not m:
+        return classify_dji_file(path)
+    seq, band = m.group(1), DJI_BAND_BY_SUFFIX[m.group(2).upper()]
+    stamp = _dji_stamp(path.name)
+    if stamp is None:
+        return None, band
+    rows = (
+        db.query(models.SurveyImage.filename, models.SurveyImage.frame_key)
+        .filter(models.SurveyImage.survey_id == survey.id, models.SurveyImage.frame_key.like(f"upload:%:{seq}"))
+        .all()
+    )
+    for filename, key in rows:
+        other = _dji_stamp(filename)
+        if other is not None and abs((other - stamp).total_seconds()) <= FRAME_PAIR_WINDOW_S:
+            return key, band
+    return f"upload:{stamp:%Y%m%d%H%M%S}:{seq}", band
 
 
 def _project_flat(lat: float, lon: float, lat0: float, lon0: float) -> tuple[float, float]:
@@ -161,6 +198,27 @@ def ingest_gnss_files_from_directory(db: Session, survey: models.Survey, directo
         created.append(asset)
     db.flush()
     return created
+
+
+def delete_survey_files(survey: models.Survey) -> None:
+    """Removes what the API wrote for the survey: uploads, quick-mosaic
+    outputs, manual imports and caches. Frames and sidecars registered in
+    place (DJI mission folders on the user's drive) are never touched, and
+    neither are the photogrammetry/splat pipeline outputs under data/splats/
+    and frontend/public/{tiles,models,splats}/<survey_id>/ — those are
+    managed by the scripts that build them."""
+    import shutil
+
+    from app.config import settings
+
+    shutil.rmtree(settings.surveys_dir / survey.id, ignore_errors=True)
+    for img in survey.images:
+        (settings.thumbs_cache_dir / f"{img.id}.jpg").unlink(missing_ok=True)
+        (settings.band_display_cache_dir / f"{img.id}.png").unlink(missing_ok=True)
+    for asset in survey.assets:
+        (settings.asset_previews_cache_dir / f"{asset.id}.png").unlink(missing_ok=True)
+    for p in settings.index_preview_cache_dir.glob(f"{survey.id}_*.png"):
+        p.unlink(missing_ok=True)
 
 
 def update_field_boundary_from_images(db: Session, field: models.Field, images: list[models.SurveyImage]) -> None:

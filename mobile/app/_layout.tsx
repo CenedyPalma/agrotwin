@@ -1,0 +1,60 @@
+import { useEffect } from "react";
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
+import { useFonts } from "expo-font";
+import { Barlow_400Regular } from "@expo-google-fonts/barlow/400Regular";
+import { Barlow_500Medium } from "@expo-google-fonts/barlow/500Medium";
+import { Barlow_600SemiBold } from "@expo-google-fonts/barlow/600SemiBold";
+import { Barlow_700Bold } from "@expo-google-fonts/barlow/700Bold";
+import { BarlowCondensed_600SemiBold } from "@expo-google-fonts/barlow-condensed/600SemiBold";
+import { useTheme } from "@/hooks/useTheme";
+import { AppProviders } from "@/providers/AppProviders";
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
+function RootStack() {
+  const { colors, isDark } = useTheme();
+  return (
+    <>
+      <StatusBar style={isDark ? "light" : "dark"} />
+      <Stack
+        screenOptions={{
+          // Every screen draws its own header from the design (ScreenHeader).
+          headerShown: false,
+          contentStyle: { backgroundColor: colors.bg },
+          animation: "slide_from_right",
+        }}
+      >
+        <Stack.Screen name="index" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="map/[surveyId]" options={{ animation: "fade" }} />
+        <Stack.Screen name="twin/[surveyId]" options={{ animation: "fade" }} />
+        <Stack.Screen name="ai/chat" options={{ animation: "slide_from_bottom" }} />
+      </Stack>
+    </>
+  );
+}
+
+export default function RootLayout() {
+  // The Industry design system: Barlow Condensed headings over Barlow body.
+  const [fontsLoaded, fontError] = useFonts({
+    Barlow_400Regular,
+    Barlow_500Medium,
+    Barlow_600SemiBold,
+    Barlow_700Bold,
+    BarlowCondensed_600SemiBold,
+  });
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) SplashScreen.hideAsync().catch(() => {});
+  }, [fontsLoaded, fontError]);
+
+  if (!fontsLoaded && !fontError) return null;
+
+  return (
+    <AppProviders>
+      <RootStack />
+    </AppProviders>
+  );
+}

@@ -93,3 +93,17 @@ def survey_dir(survey_id: str) -> Path:
     d = settings.surveys_dir / survey_id
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def asset_import_dir(survey_id: str, asset_id: str) -> Path:
+    """Folder holding a manual import's files; the API serves it to the viewer."""
+    return settings.surveys_dir / survey_id / "imports" / asset_id
+
+
+def unique_path(path: Path) -> Path:
+    """path itself if free, else the first free name_1.ext, name_2.ext, …"""
+    candidate, n = path, 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_{n}{path.suffix}")
+        n += 1
+    return candidate

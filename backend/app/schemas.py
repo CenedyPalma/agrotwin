@@ -18,6 +18,11 @@ class FieldCreate(BaseModel):
     crop_type: str = "soybean"
 
 
+class FieldUpdate(BaseModel):
+    name: str | None = None
+    crop_type: str | None = None
+
+
 class FieldOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -108,6 +113,7 @@ class SurveyAssetsAvailability(BaseModel):
     pointcloud: bool
     gnss_ppk: bool
     dsm: bool
+    vector_overlays: bool = False
 
 
 class DetectionZoneOut(BaseModel):
@@ -123,7 +129,7 @@ class DetectionZoneOut(BaseModel):
 class AnalysisResultOut(BaseModel):
     survey_id: str
     analysis_summary: dict[str, float]
-    method: str  # "ndvi" (multispectral) | "exg" (RGB-only index)
+    method: str  # ndvi_map | exg_map | ndvi | exg — see analysis_service
     is_mock: bool
     detections: list[DetectionZoneOut]
 
@@ -135,3 +141,6 @@ class ProcessingJobOut(BaseModel):
     status: str
     current_step: str | None = None
     steps: list[dict[str, Any]] = []
+    error_message: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

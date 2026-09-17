@@ -1,5 +1,23 @@
 # Dev environment notes
 
+## Windows machine (E:\Test1\agrotwin, since 2026-09-13)
+
+- Everything project-related stays on E:\ — temp files, package caches
+  (uv/pip), compiled CUDA kernels and logs live under `.cache/` and `logs/`.
+  `run.ps1` (servers) and `run_gpu.ps1` (pipeline scripts) set TEMP/TMP,
+  UV_CACHE_DIR, PIP_CACHE_DIR and TORCH_EXTENSIONS_DIR accordingly; do the
+  same for anything started by hand.
+- The backend venv is `backend/.venv-gpu` (Python 3.11, torch cu130, gsplat,
+  pycolmap, all backend requirements). Install new packages there:
+  `uv pip install --python backend\.venv-gpu\Scripts\python.exe <pkg>`.
+  `backend/.venv` (Python 3.14, CPU only) still works for the API alone.
+  The venv lives on an HDD: a cold `import torch` can take minutes after the
+  OS cache evicts it — that's slow, not hung.
+- The GPU is an RTX 4060 Ti 16 GB; CUDA COLMAP 4.2 is unpacked under
+  `tools/colmap/` (build_splats.py finds it automatically).
+- Raw frames of the current survey are referenced in place under
+  `E:\40 ft\RGB Only\Part 1..3` (1,378 DJI `_D.JPG`, RGB only, no bands).
+
 ## exFAT drive can't hold symlinks
 
 The source imagery lives on `/media/cdev/Personal1/...` which is exFAT.

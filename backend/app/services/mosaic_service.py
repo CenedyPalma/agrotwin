@@ -48,6 +48,19 @@ from app.services.metadata_service import read_dji_xmp
 
 log = logging.getLogger(__name__)
 
+
+def _torch_cuda():
+    """torch on a CUDA device, or None. Both hot loops here (lens undistortion
+    and the warp-and-accumulate) are per-pixel gathers — grid_sample on the GPU
+    does them far faster than the numpy/PIL path, which stays as the fallback
+    for machines without a GPU."""
+    try:
+        import torch
+    except ImportError:
+        return None
+    return torch if torch.cuda.is_available() else None
+
+
 RGB_GSD_M = 0.02  # output ground sample distance (metres/pixel); native ≈ 0.8 cm at 30 m AGL
 INDEX_GSD_M = 0.05  # MS bands are 2592 px across ~45 m → ≈ 1.7 cm native
 RGB_DRAFT_MAX = 2640  # decode RGB JPGs at 1/2 (≈ 1.6 cm), enough to fill a 2 cm grid
@@ -115,6 +128,24 @@ def _undistort_maps(d: Dewarp, w: int, h: int, scale: float):
     return maps
 
 
+def _remap_bilinear_gpu(torch, img: np.ndarray, map_x: np.ndarray, map_y: np.ndarray):
+    """grid_sample equivalent of _remap_bilinear. Same zero-outside-source
+    semantics, same float32 output."""
+    h, w = img.shape[:2]
+    dev = "cuda"
+    t = torch.from_numpy(np.ascontiguousarray(img)).to(dev, torch.float32)
+    t = t.permute(2, 0, 1)[None] if t.ndim == 3 else t[None, None]
+    gx = torch.from_numpy(map_x).to(dev, torch.float32)
+    gy = torch.from_numpy(map_y).to(dev, torch.float32)
+    inside = (gx >= 0) & (gx < w - 1) & (gy >= 0) & (gy < h - 1)
+    # grid_sample wants normalised [-1, 1] coordinates
+    grid = torch.stack([gx / max(w - 1, 1) * 2 - 1, gy / max(h - 1, 1) * 2 - 1], dim=-1)[None]
+    out = torch.nn.functional.grid_sample(t, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+    out = out[0].permute(1, 2, 0) if img.ndim == 3 else out[0, 0]
+    out = torch.where(inside[..., None] if img.ndim == 3 else inside, out, torch.zeros((), device=dev))
+    return out.cpu().numpy(), inside.cpu().numpy()
+
+
 def _remap_bilinear(img: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:
     h, w = img.shape[:2]
     x0 = np.floor(map_x).astype(np.int32)
@@ -136,6 +167,9 @@ def _remap_bilinear(img: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np
 def undistort(img: np.ndarray, d: Dewarp, scale: float) -> tuple[np.ndarray, np.ndarray]:
     h, w = img.shape[:2]
     map_x, map_y = _undistort_maps(d, w, h, scale)
+    torch = _torch_cuda()
+    if torch is not None:
+        return _remap_bilinear_gpu(torch, img, map_x, map_y)
     return _remap_bilinear(img, map_x, map_y)
 
 
@@ -235,6 +269,13 @@ def _paste(canvas: np.ndarray, wsum: np.ndarray, img: np.ndarray, M: np.ndarray,
     size = (c1 - c0, r1 - r0)
 
     weight = _weight_image(w, h, valid_src)
+    torch = _torch_cuda()
+    if torch is not None:
+        # one grid_sample for all channels + the weight, instead of a PIL
+        # transform per channel
+        _paste_gpu(torch, canvas, wsum, img, weight, coeffs, size, c0, r0, c1, r1)
+        return
+
     wpatch = np.asarray(Image.fromarray(weight).transform(size, Image.AFFINE, coeffs, Image.BILINEAR), dtype=np.float32)
     valid = wpatch > MIN_WEIGHT
     if img.ndim == 2:
@@ -245,6 +286,47 @@ def _paste(canvas: np.ndarray, wsum: np.ndarray, img: np.ndarray, M: np.ndarray,
             patch = np.asarray(Image.fromarray(np.ascontiguousarray(img[..., ch])).transform(size, Image.AFFINE, coeffs, Image.BILINEAR), dtype=np.float32)
             canvas[r0:r1, c0:c1, ch] += np.where(valid, patch * wpatch, 0)
     wsum[r0:r1, c0:c1] += np.where(valid, wpatch, 0)
+
+
+def _paste_gpu(torch, canvas, wsum, img, weight, coeffs, size, c0, r0, c1, r1) -> None:
+    """Same affine warp + weighted accumulation as the PIL path, on the GPU.
+
+    PIL's AFFINE coeffs map output (x, y) -> source (u, v):
+        u = a·x + b·y + c,  v = d·x + e·y + f
+    """
+    dev = "cuda"
+    a, b, c, d, e, f = coeffs
+    out_w, out_h = size
+    h, w = img.shape[:2]
+
+    ys, xs = torch.meshgrid(
+        torch.arange(out_h, device=dev, dtype=torch.float32),
+        torch.arange(out_w, device=dev, dtype=torch.float32),
+        indexing="ij",
+    )
+    u = a * xs + b * ys + c
+    v = d * xs + e * ys + f
+    grid = torch.stack([u / max(w - 1, 1) * 2 - 1, v / max(h - 1, 1) * 2 - 1], dim=-1)[None]
+
+    src = np.ascontiguousarray(img if img.ndim == 3 else img[..., None])
+    t = torch.from_numpy(src).to(dev, torch.float32).permute(2, 0, 1)[None]
+    wt = torch.from_numpy(weight).to(dev, torch.float32)[None, None]
+    stack = torch.cat([t, wt], dim=1)  # channels + weight warped together
+
+    warped = torch.nn.functional.grid_sample(
+        stack, grid, mode="bilinear", padding_mode="zeros", align_corners=True
+    )[0]
+    patch, wpatch = warped[:-1], warped[-1]
+    valid = wpatch > MIN_WEIGHT
+    wpatch = torch.where(valid, wpatch, torch.zeros((), device=dev))
+
+    dst = torch.from_numpy(canvas[r0:r1, c0:c1]).to(dev, torch.float32)
+    contrib = (patch * wpatch).permute(1, 2, 0)
+    dst += contrib if canvas.ndim == 3 else contrib[..., 0]
+    canvas[r0:r1, c0:c1] = dst.cpu().numpy()
+
+    ws = torch.from_numpy(wsum[r0:r1, c0:c1]).to(dev, torch.float32) + wpatch
+    wsum[r0:r1, c0:c1] = ws.cpu().numpy()
 
 
 def _grid_for(geoms: dict[str, FrameGeom], footprint_scale: float, gsd: float):
@@ -293,7 +375,10 @@ def build_rgb_mosaic(survey: models.Survey, out_path: Path, epsg: int) -> dict |
         row = by_key[key]
         try:
             with ms.open_image_safely(row.path) as im:
-                im.draft("RGB", (RGB_DRAFT_MAX, RGB_DRAFT_MAX))
+                # the draft target must keep the frame's aspect: PIL only takes a
+                # 1/2 scale when *both* dimensions still cover the request, so a
+                # square target silently decodes 4:3 frames at full resolution
+                im.draft("RGB", (RGB_DRAFT_MAX, round(RGB_DRAFT_MAX * im.height / im.width)))
                 im = im.convert("RGB")
                 scale = im.size[0] / (row.width or im.size[0])
                 img = np.asarray(im, dtype=np.float32)

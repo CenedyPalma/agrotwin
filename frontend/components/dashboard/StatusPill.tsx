@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { Badge } from "@/components/ui/badge";
-import { METHOD_LABEL } from "@/lib/frames";
+import { METHOD_DESCRIPTION, METHOD_LABEL } from "@/lib/frames";
 import type { AnalysisMethod } from "@/lib/types";
 
 const DOT: Record<string, string> = {
@@ -31,8 +31,8 @@ export function MockDataBadge() {
 export function MethodBadge({ method }: { method: AnalysisMethod | null | undefined }) {
   if (!method) return null;
   return (
-    <Badge variant="outline" className="text-muted-foreground font-normal">
-      {METHOD_LABEL[method]}
+    <Badge variant="outline" className="text-muted-foreground font-normal" title={METHOD_DESCRIPTION[method]}>
+      {METHOD_LABEL[method] ?? method}
     </Badge>
   );
 }

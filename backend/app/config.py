@@ -49,6 +49,8 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "https://agency.cenedypalma.com",
         "http://agency.cenedypalma.com",
+        "https://bayazid.cenedypalma.com",
+        "http://bayazid.cenedypalma.com",
     ]
 
     # Local / Offline LLM via Ollama
