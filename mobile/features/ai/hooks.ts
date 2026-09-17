@@ -1,7 +1,14 @@
 import { useCallback } from "react";
 import { aiService } from "@/services/ai";
 import { describeError } from "@/services/errors";
-import { newMessageId, useChatStore } from "@/stores/chatStore";
+import { newMessageId, useChatStore, type ChatMessage } from "@/stores/chatStore";
+
+// Stable fallback so the selector below never hands Zustand a fresh array
+// reference when a thread doesn't exist yet. Returning `s.threads[key] ?? []`
+// directly creates a new [] on every read, which useSyncExternalStore treats
+// as "the snapshot changed" on every render — an infinite render loop (React
+// DOM enforces this strictly; it silently wastes renders on native).
+const EMPTY_MESSAGES: ChatMessage[] = [];
 
 /**
  * Chat thread for one survey. Sends the farmer's question to the backend
@@ -9,7 +16,7 @@ import { newMessageId, useChatStore } from "@/stores/chatStore";
  */
 export function useChat(surveyId: string | null | undefined) {
   const key = surveyId ?? "";
-  const messages = useChatStore((s) => s.threads[key] ?? []);
+  const messages = useChatStore((s) => s.threads[key] ?? EMPTY_MESSAGES);
   const append = useChatStore((s) => s.append);
   const update = useChatStore((s) => s.update);
   const clear = useChatStore((s) => s.clear);

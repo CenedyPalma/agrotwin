@@ -1,74 +1,87 @@
 import { StyleSheet, View } from "react-native";
-import { X, Globe2, FileText } from "lucide-react-native";
-import { radius, spacing, status } from "@/constants/theme";
-import { detectionTypeLabel, severityTier, TIER_EMOJI } from "@/constants/labels";
+import { detectionTypeLabel } from "@/constants/labels";
 import { useTheme } from "@/hooks/useTheme";
 import type { DetectionZone } from "@/types";
-import { formatArea, formatConfidence } from "@/utils/format";
-import { Button, IconButton, AppText } from "@/components/ui";
+import { formatArea, formatPercent } from "@/utils/format";
+import { BottomSheet, Button, AppText } from "@/components/ui";
 import { PriorityBadge } from "@/components/analysis/PriorityBadge";
 
-interface ZoneDetailsProps {
-  zone: DetectionZone;
+interface ZoneSheetProps {
+  zone: DetectionZone | null;
   areaM2: number | null;
+  /** Field area in hectares, for "Share of field". */
+  fieldHectares: number | null;
   locationLabel: string | null;
   onClose: () => void;
   onViewDetails: () => void;
-  onOpenTwin?: () => void;
+  onOpenTwin: () => void;
 }
 
-/** Bottom card shown when a farmer taps a zone on the map. */
-export function ZoneDetails({ zone, areaM2, locationLabel, onClose, onViewDetails, onOpenTwin }: ZoneDetailsProps) {
+/** Canvas zone sheet: title + place, priority tag, Area / Share of field cells, Recommendation box, two buttons. */
+export function ZoneSheet({ zone, areaM2, fieldHectares, locationLabel, onClose, onViewDetails, onOpenTwin }: ZoneSheetProps) {
   const { colors } = useTheme();
-  const tier = severityTier(zone.severity);
+  const share = areaM2 != null && fieldHectares ? formatPercent((areaM2 / (fieldHectares * 10_000)) * 100) : "—";
   return (
-    <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} accessibilityViewIsModal>
-      <View style={[styles.stripe, { backgroundColor: status[tier] }]} />
-      <View style={styles.header}>
-        <View style={styles.titles}>
-          <AppText variant="heading">
-            {TIER_EMOJI[tier]} {detectionTypeLabel(zone.type)}
-          </AppText>
-          {locationLabel ? (
-            <AppText variant="caption" tone="muted">
-              {locationLabel}
+    <BottomSheet
+      visible={!!zone}
+      onClose={onClose}
+      accessibilityLabel={zone ? `${detectionTypeLabel(zone.type)} details` : "Zone details"}
+      header={
+        zone ? (
+          <View style={styles.head}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <AppText variant="title" style={{ fontSize: 24, lineHeight: 26 }}>
+                {detectionTypeLabel(zone.type)}
+              </AppText>
+              <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                {locationLabel ?? "Location not computed"}
+              </AppText>
+            </View>
+            <PriorityBadge severity={zone.severity} short />
+          </View>
+        ) : null
+      }
+    >
+      {zone ? (
+        <>
+          <View style={[styles.cells, { borderColor: colors.divider }]}>
+            <View style={[styles.cell, { borderRightWidth: 1, borderRightColor: colors.divider }]}>
+              <AppText variant="tagUpper" tone="muted">
+                Area
+              </AppText>
+              <AppText variant="numberSm" tabular>
+                ≈ {formatArea(areaM2)}
+              </AppText>
+            </View>
+            <View style={styles.cell}>
+              <AppText variant="tagUpper" tone="muted">
+                Share of field
+              </AppText>
+              <AppText variant="numberSm" tabular>
+                {share}
+              </AppText>
+            </View>
+          </View>
+          <View style={[styles.reco, { borderColor: colors.divider }]}>
+            <AppText variant="kicker" tone="accent" style={{ marginBottom: 4 }}>
+              Recommendation
             </AppText>
-          ) : null}
-        </View>
-        <IconButton icon={<X size={18} color={colors.text} />} accessibilityLabel="Close zone details" onPress={onClose} size={40} />
-      </View>
-      <View style={styles.facts}>
-        <PriorityBadge severity={zone.severity} size="md" />
-        <AppText variant="body" tone="muted">
-          Area ≈ {formatArea(areaM2)}
-        </AppText>
-        <AppText variant="body" tone="muted">
-          Confidence {formatConfidence(zone.confidence)}
-        </AppText>
-      </View>
-      <View style={[styles.reco, { backgroundColor: colors.surface2 }]}>
-        <AppText variant="caption" tone="muted">
-          Recommendation
-        </AppText>
-        <AppText variant="bodyStrong">{zone.recommended_action}</AppText>
-      </View>
-      <View style={styles.actions}>
-        <Button label="View details" variant="outline" icon={<FileText size={16} color={colors.text} />} onPress={onViewDetails} style={styles.action} />
-        {onOpenTwin ? (
-          <Button label="Open Digital Twin" icon={<Globe2 size={16} color={colors.onBrand} />} onPress={onOpenTwin} style={styles.action} />
-        ) : null}
-      </View>
-    </View>
+            <AppText variant="body">{zone.recommended_action}</AppText>
+          </View>
+          <View style={styles.actions}>
+            <Button label="View details" minHeight={50} onPress={onViewDetails} style={{ flex: 1 }} />
+            <Button label="Digital twin" variant="secondary" minHeight={50} onPress={onOpenTwin} style={{ flex: 1 }} />
+          </View>
+        </>
+      ) : null}
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: radius.xl, borderWidth: StyleSheet.hairlineWidth, padding: spacing.lg, gap: spacing.md, overflow: "hidden" },
-  stripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 5 },
-  header: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
-  titles: { flex: 1, gap: 2 },
-  facts: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.md },
-  reco: { padding: spacing.md, borderRadius: radius.md, gap: 2 },
-  actions: { flexDirection: "row", gap: spacing.sm },
-  action: { flex: 1 },
+  head: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  cells: { flexDirection: "row", borderWidth: 1, marginTop: 14 },
+  cell: { flex: 1, paddingVertical: 10, paddingHorizontal: 12, gap: 2 },
+  reco: { borderWidth: 1, padding: 12, marginTop: 12 },
+  actions: { flexDirection: "row", gap: 8, marginTop: 14 },
 });

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { StyleSheet, TextInput, View } from "react-native";
 import { Mic, SendHorizontal } from "lucide-react-native";
-import { radius, spacing } from "@/constants/theme";
+import { iconStroke, typography } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { IconButton } from "@/components/ui";
 
@@ -17,6 +17,7 @@ interface ChatComposerProps {
   onVoice?: () => void;
 }
 
+/** Canvas composer bar: hairline input, 50 px accent send square, mic on the left (design: text/voice input row). */
 export function ChatComposer({ onSend, disabled = false, placeholder = "Ask about your field…", onVoice }: ChatComposerProps) {
   const { colors } = useTheme();
   const [text, setText] = useState("");
@@ -29,19 +30,13 @@ export function ChatComposer({ onSend, disabled = false, placeholder = "Ask abou
   };
 
   return (
-    <View style={[styles.bar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
-      <IconButton
-        icon={<Mic size={20} color={onVoice ? colors.text : colors.textMuted} />}
-        accessibilityLabel={onVoice ? "Ask by voice" : "Voice input coming soon"}
-        onPress={onVoice}
-        disabled={!onVoice}
-        size={44}
-      />
+    <View style={[styles.bar, { backgroundColor: colors.bg, borderTopColor: colors.divider }]}>
+      <IconButton icon={<Mic size={20} color={onVoice ? colors.text : colors.muted} strokeWidth={iconStroke} />} accessibilityLabel={onVoice ? "Ask by voice" : "Voice input coming soon"} onPress={onVoice} disabled={!onVoice} size={44} />
       <TextInput
         value={text}
         onChangeText={setText}
         placeholder={placeholder}
-        placeholderTextColor={colors.textMuted}
+        placeholderTextColor={colors.muted}
         multiline
         maxLength={500}
         editable={!disabled}
@@ -49,36 +44,21 @@ export function ChatComposer({ onSend, disabled = false, placeholder = "Ask abou
         blurOnSubmit
         onSubmitEditing={submit}
         accessibilityLabel="Your question"
-        style={[styles.input, { color: colors.text, backgroundColor: colors.surface2, borderColor: colors.border }]}
+        style={[styles.input, typography.body, { color: colors.text, borderColor: colors.divider }]}
       />
       <IconButton
-        icon={<SendHorizontal size={20} color={canSend ? colors.onBrand : colors.textMuted} />}
+        tone={canSend ? "primary" : "plain"}
+        icon={<SendHorizontal size={20} color={canSend ? colors.onAccent : colors.muted} strokeWidth={iconStroke} />}
         accessibilityLabel="Send question"
         onPress={submit}
         disabled={!canSend}
         size={44}
-        style={canSend ? { backgroundColor: colors.brand, borderColor: colors.brand } : undefined}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  bar: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: spacing.sm,
-    padding: spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  input: {
-    flex: 1,
-    minHeight: 44,
-    maxHeight: 120,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm + 2,
-    fontSize: 15,
-  },
+  bar: { flexDirection: "row", alignItems: "flex-end", gap: 8, padding: 12, borderTopWidth: 1 },
+  input: { flex: 1, minHeight: 44, maxHeight: 120, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8 },
 });

@@ -1,69 +1,84 @@
 import { StyleSheet, View } from "react-native";
-import { Check, Circle } from "lucide-react-native";
-import { spacing } from "@/constants/theme";
+import { Check, Clock } from "lucide-react-native";
 import { useTheme } from "@/hooks/useTheme";
 import type { SurveyAvailability } from "@/types";
-import { Card, AppText } from "@/components/ui";
+import type { SplatAvailability } from "@/features/digitalTwin/hooks";
+import { formatNumber } from "@/utils/format";
+import { AppText } from "@/components/ui";
+
+type Mark = "done" | "run" | "wait" | "none";
+
+interface Item {
+  label: string;
+  mark: Mark;
+  note: string;
+  advancedOnly?: boolean;
+}
 
 interface SurveyAssetListProps {
   availability: SurveyAvailability;
   hasAnalysis: boolean;
+  processing: boolean;
+  imageCount: number;
+  zoneCount: number | null;
+  splat: SplatAvailability | undefined;
   advanced?: boolean;
 }
 
-interface Item {
-  label: string;
-  available: boolean;
-  advancedOnly?: boolean;
-  hint?: string;
-}
-
-/** "Available assets" checklist — mirrors the web app's AvailabilityChecklist. */
-export function SurveyAssetList({ availability, hasAnalysis, advanced = false }: SurveyAssetListProps) {
+/**
+ * Canvas "Available data": hairline list, 48 px rows, a glyph per state
+ * (✓ done in ok, ◷ running in accent, □ waiting / not available), label,
+ * muted note. Every value comes from the backend availability endpoint.
+ */
+export function SurveyAssetList({ availability, hasAnalysis, processing, imageCount, zoneCount, splat, advanced = false }: SurveyAssetListProps) {
   const { colors } = useTheme();
-  const items: Item[] = [
-    { label: "Drone images", available: availability.rgb_images },
-    { label: "GPS positions", available: availability.gps_metadata },
-    { label: "Field photo map (orthomosaic)", available: availability.orthomosaic },
-    { label: "Health analysis", available: hasAnalysis },
-    { label: "Attention zones", available: hasAnalysis },
-    { label: "3D reconstruction", available: availability.model_3d },
-    { label: "Point cloud", available: availability.pointcloud, advancedOnly: true },
-    { label: "Elevation model (DSM)", available: availability.dsm, advancedOnly: true },
-    { label: "Multispectral bands", available: availability.multispectral, advancedOnly: true },
-    { label: "Thermal", available: availability.thermal, hint: availability.thermal ? undefined : "No thermal sensor data" },
-    { label: "Imported boundaries", available: availability.vector_overlays, advancedOnly: true },
-    { label: "PPK / RTK corrections", available: availability.gnss_ppk, advancedOnly: true },
-  ];
-  const visible = items.filter((i) => advanced || !i.advancedOnly);
+  const run = (ready: boolean): Mark => (ready ? "done" : processing ? "run" : "wait");
+  const ifAvail = (ready: boolean): Mark => (ready ? "done" : "none");
+  const items: Item[] = ([
+    { label: "Drone images", mark: ifAvail(imageCount > 0), note: imageCount > 0 ? formatNumber(imageCount) : "None uploaded" },
+    { label: "GPS metadata", mark: ifAvail(availability.gps_metadata), note: availability.gps_metadata ? "Complete" : "Missing" },
+    { label: "Orthomosaic", mark: run(availability.orthomosaic), note: availability.orthomosaic ? "Stitched" : processing ? "Building" : "Not built" },
+    { label: "Field analysis", mark: run(hasAnalysis), note: hasAnalysis ? "Complete" : processing ? "Running" : "Not run" },
+    { label: "Detection zones", mark: run(hasAnalysis), note: zoneCount != null ? `${zoneCount} found` : "" },
+    { label: "Digital twin", mark: availability.model_3d ? "done" : processing ? "run" : "wait", note: availability.model_3d ? "3D model" : "Terrain only" },
+    { label: "Photorealistic view", mark: ifAvail(splat === "available"), note: splat === "available" ? "Ready" : splat === "missing" ? "Not built" : "Unknown" },
+    { label: "Thermal analysis", mark: ifAvail(availability.thermal), note: availability.thermal ? "Available" : "Not flown" },
+    { label: "Multispectral bands", mark: ifAvail(availability.multispectral), note: availability.multispectral ? "Available" : "RGB only", advancedOnly: true },
+    { label: "Elevation (DSM)", mark: ifAvail(availability.dsm), note: availability.dsm ? "Available" : "Not built", advancedOnly: true },
+    { label: "Point cloud", mark: ifAvail(availability.pointcloud), note: availability.pointcloud ? "Available" : "Not built", advancedOnly: true },
+    { label: "PPK / RTK corrections", mark: ifAvail(availability.gnss_ppk), note: availability.gnss_ppk ? "Imported" : "None", advancedOnly: true },
+  ] satisfies Item[]).filter((i) => advanced || !i.advancedOnly);
 
   return (
-    <Card>
-      <AppText variant="label" tone="muted" style={styles.title}>
-        Available assets
-      </AppText>
-      <View style={styles.list}>
-        {visible.map((item) => (
-          <View key={item.label} style={styles.row} accessibilityLabel={`${item.label}: ${item.available ? "available" : "not available"}`}>
-            {item.available ? <Check size={18} color={colors.healthy} /> : <Circle size={16} color={colors.textMuted} />}
-            <AppText variant="body" tone={item.available ? "default" : "muted"} style={styles.label}>
+    <View style={[styles.list, { borderColor: colors.divider }]} accessibilityRole="list">
+      {items.map((item, i) => {
+        const color = item.mark === "done" ? colors.healthy : item.mark === "run" ? colors.accent : colors.muted;
+        return (
+          <View key={item.label} style={[styles.row, i < items.length - 1 && { borderBottomColor: colors.hairline, borderBottomWidth: 1 }]} accessibilityLabel={`${item.label}: ${item.note || item.mark}`}>
+            <View style={styles.glyph}>
+              {item.mark === "done" ? (
+                <Check size={16} color={color} strokeWidth={2.2} />
+              ) : item.mark === "run" ? (
+                <Clock size={16} color={color} strokeWidth={1.8} />
+              ) : (
+                <View style={{ width: 9, height: 9, borderWidth: 1, borderColor: color }} />
+              )}
+            </View>
+            <AppText variant="bodySm" style={{ flex: 1 }}>
               {item.label}
             </AppText>
-            {item.hint ? (
-              <AppText variant="caption" tone="muted">
-                {item.hint}
-              </AppText>
-            ) : null}
+            <AppText variant="small" tone="muted">
+              {item.note}
+            </AppText>
           </View>
-        ))}
-      </View>
-    </Card>
+        );
+      })}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  title: { marginBottom: spacing.sm },
-  list: { gap: spacing.sm },
-  row: { flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 28 },
-  label: { flex: 1 },
+  list: { borderWidth: 1 },
+  row: { flexDirection: "row", alignItems: "center", gap: 11, minHeight: 48, paddingHorizontal: 14, paddingVertical: 6 },
+  glyph: { width: 22, alignItems: "center", justifyContent: "center" },
 });

@@ -1,6 +1,6 @@
 import { ScrollView, StyleSheet } from "react-native";
 import { SUGGESTED_QUESTIONS } from "@/constants/labels";
-import { spacing } from "@/constants/theme";
+import { layout } from "@/constants/theme";
 import { Chip } from "@/components/ui";
 
 interface SuggestedQuestionsProps {
@@ -8,6 +8,7 @@ interface SuggestedQuestionsProps {
   disabled?: boolean;
 }
 
+/** Canvas horizontal chip row above the composer. */
 export function SuggestedQuestions({ onPick, disabled }: SuggestedQuestionsProps) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} keyboardShouldPersistTaps="handled" accessibilityLabel="Suggested questions">
@@ -18,4 +19,4 @@ export function SuggestedQuestions({ onPick, disabled }: SuggestedQuestionsProps
   );
 }
 
-const styles = StyleSheet.create({ row: { gap: spacing.sm, paddingHorizontal: spacing.lg } });
+const styles = StyleSheet.create({ row: { gap: 8, paddingHorizontal: layout.pagePadding, paddingVertical: 8 } });

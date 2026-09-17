@@ -1,7 +1,7 @@
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { StyleSheet, TextInput, View } from "react-native";
-import { radius, spacing } from "@/constants/theme";
+import { typography } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { newSurveySchema, type NewSurveyForm as Values } from "@/features/upload/schemas";
 import { formatDate } from "@/utils/format";
@@ -14,6 +14,7 @@ interface NewSurveyFormProps {
   error?: string | null;
 }
 
+/** Canvas "Survey details" step: name, drone (optional), primary submit. */
 export function NewSurveyForm({ fieldId, onSubmit, submitting, error }: NewSurveyFormProps) {
   const { colors } = useTheme();
   const form = useForm<Values>({
@@ -21,10 +22,7 @@ export function NewSurveyForm({ fieldId, onSubmit, submitting, error }: NewSurve
     defaultValues: { field_id: fieldId, name: `Survey — ${formatDate(new Date().toISOString())}`, drone_model: "" },
   });
 
-  const input = (fieldState: { error?: { message?: string } }) => [
-    styles.input,
-    { color: colors.text, backgroundColor: colors.surface2, borderColor: fieldState.error ? colors.problem : colors.border },
-  ];
+  const input = (fieldState: { error?: { message?: string } }) => [styles.input, typography.body, { color: colors.text, borderColor: fieldState.error ? colors.problem : colors.divider }];
 
   return (
     <View style={styles.form}>
@@ -36,7 +34,7 @@ export function NewSurveyForm({ fieldId, onSubmit, submitting, error }: NewSurve
             <AppText variant="caption" tone="muted">
               Survey name
             </AppText>
-            <TextInput value={field.value} onChangeText={field.onChange} onBlur={field.onBlur} placeholderTextColor={colors.textMuted} accessibilityLabel="Survey name" style={input(fieldState)} />
+            <TextInput value={field.value} onChangeText={field.onChange} onBlur={field.onBlur} placeholderTextColor={colors.muted} accessibilityLabel="Survey name" style={input(fieldState)} />
             {fieldState.error ? (
               <AppText variant="caption" tone="problem">
                 {fieldState.error.message}
@@ -58,7 +56,7 @@ export function NewSurveyForm({ fieldId, onSubmit, submitting, error }: NewSurve
               onChangeText={field.onChange}
               onBlur={field.onBlur}
               placeholder="e.g. DJI Mavic 3 Multispectral"
-              placeholderTextColor={colors.textMuted}
+              placeholderTextColor={colors.muted}
               accessibilityLabel="Drone model"
               style={input(fieldState)}
             />
@@ -76,7 +74,7 @@ export function NewSurveyForm({ fieldId, onSubmit, submitting, error }: NewSurve
 }
 
 const styles = StyleSheet.create({
-  form: { gap: spacing.md },
-  field: { gap: spacing.xs },
-  input: { height: 48, borderRadius: radius.md, borderWidth: 1, paddingHorizontal: spacing.md, fontSize: 15 },
+  form: { gap: 12 },
+  field: { gap: 4 },
+  input: { height: 48, borderWidth: 1, paddingHorizontal: 12 },
 });

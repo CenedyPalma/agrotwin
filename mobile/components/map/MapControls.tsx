@@ -1,40 +1,33 @@
 import { StyleSheet, View } from "react-native";
-import { Layers, Maximize2, LocateFixed, Globe2, Map as MapIcon } from "lucide-react-native";
-import { spacing } from "@/constants/theme";
+import { Bot, Crosshair, Cuboid, Layers } from "lucide-react-native";
+import { iconStroke, layout } from "@/constants/theme";
+import { useTheme } from "@/hooks/useTheme";
 import { IconButton } from "@/components/ui";
 
 interface MapControlsProps {
-  onFitField: () => void;
-  onToggleLayers: () => void;
+  onLayers: () => void;
+  onCentre: () => void;
+  onTwin: () => void;
+  onAi: () => void;
   layersOpen: boolean;
-  onToggleBase: () => void;
-  baseIsSatellite: boolean;
-  onLocate?: () => void;
-  locating?: boolean;
-  /** Offset from the top so the controls clear the header / safe area. */
-  top: number;
+  /** Distance from the bottom edge (canvas: 26 px above the frame edge). */
+  bottom: number;
 }
 
-/** Floating map controls (right edge). Icon-only, so every button is labelled for screen readers. */
-export function MapControls({ onFitField, onToggleLayers, layersOpen, onToggleBase, baseIsSatellite, onLocate, locating, top }: MapControlsProps) {
-  const iconColor = "#ffffff";
+/** Canvas map tool stack (bottom-right): Layers · Centre on field · Digital twin · Ask AI — 50 px raised squares. */
+export function MapControls({ onLayers, onCentre, onTwin, onAi, layersOpen, bottom }: MapControlsProps) {
+  const { colors } = useTheme();
+  const c = colors.text;
   return (
-    <View style={[styles.stack, { top }]} pointerEvents="box-none">
-      <IconButton overlay icon={<Maximize2 size={20} color={iconColor} />} accessibilityLabel="Fit map to field" onPress={onFitField} />
-      <IconButton overlay selected={layersOpen} icon={<Layers size={20} color={iconColor} />} accessibilityLabel={layersOpen ? "Hide layer options" : "Show layer options"} onPress={onToggleLayers} />
-      <IconButton
-        overlay
-        icon={baseIsSatellite ? <MapIcon size={20} color={iconColor} /> : <Globe2 size={20} color={iconColor} />}
-        accessibilityLabel={baseIsSatellite ? "Switch to street map" : "Switch to satellite imagery"}
-        onPress={onToggleBase}
-      />
-      {onLocate ? (
-        <IconButton overlay disabled={locating} icon={<LocateFixed size={20} color={iconColor} />} accessibilityLabel="Show my location" onPress={onLocate} />
-      ) : null}
+    <View style={[styles.stack, { bottom }]} pointerEvents="box-none">
+      <IconButton tone="raised" size={layout.tool} selected={layersOpen} icon={<Layers size={22} color={c} strokeWidth={iconStroke} />} accessibilityLabel="Layers" onPress={onLayers} />
+      <IconButton tone="raised" size={layout.tool} icon={<Crosshair size={22} color={c} strokeWidth={iconStroke} />} accessibilityLabel="Centre on field" onPress={onCentre} />
+      <IconButton tone="raised" size={layout.tool} icon={<Cuboid size={22} color={c} strokeWidth={iconStroke} />} accessibilityLabel="Digital twin" onPress={onTwin} />
+      <IconButton tone="raised" size={layout.tool} icon={<Bot size={22} color={c} strokeWidth={iconStroke} />} accessibilityLabel="Ask AI" onPress={onAi} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  stack: { position: "absolute", right: spacing.md, gap: spacing.sm },
+  stack: { position: "absolute", right: 14, gap: 10 },
 });

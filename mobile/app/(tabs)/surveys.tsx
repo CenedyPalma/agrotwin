@@ -2,13 +2,13 @@ import { useMemo, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Camera, Upload } from "lucide-react-native";
-import { spacing } from "@/constants/theme";
+import { Camera } from "lucide-react-native";
+import { layout } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { useRefresh } from "@/hooks/useRefresh";
 import { useFields } from "@/features/fields/hooks";
 import { useSurveys } from "@/features/surveys/hooks";
-import { Button, Chip, EmptyState, ErrorState, LoadingState, Screen, AppText } from "@/components/ui";
+import { Button, EmptyState, ErrorState, LoadingState, Screen, SegmentedBar, AppText } from "@/components/ui";
 import { SurveyCard } from "@/components/surveys/SurveyCard";
 import { AskAiFab } from "@/components/ai/AskAiFab";
 
@@ -40,29 +40,25 @@ export default function SurveysScreen() {
   const visible = useMemo(() => (surveys.data ?? []).filter((s) => matches(s.status, filter)), [surveys.data, filter]);
 
   const header = (
-    <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
+    <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
       <View style={styles.titleRow}>
         <AppText variant="display">Surveys</AppText>
-        <Button label="Upload" size="sm" variant="outline" icon={<Upload size={16} color={colors.text} />} onPress={() => router.push("/upload")} />
+        <Button label="New survey" onPress={() => router.push("/upload")} />
       </View>
-      <View style={styles.filters}>
-        {FILTERS.map((f) => (
-          <Chip key={f.key} label={f.label} selected={filter === f.key} onPress={() => setFilter(f.key)} />
-        ))}
-      </View>
+      <SegmentedBar options={FILTERS} value={filter} onChange={setFilter} />
     </View>
   );
 
-  let body: React.ReactNode;
+  let body: React.ReactNode = null;
   if (surveys.isPending) body = <LoadingState cards={3} />;
   else if (surveys.isError) body = <ErrorState error={surveys.error} onRetry={() => surveys.refetch()} />;
   else if ((surveys.data ?? []).length === 0)
     body = (
       <EmptyState
-        icon={<Camera size={28} color={colors.brand} />}
+        icon={<Camera size={52} color={colors.accent} strokeWidth={1.2} />}
         title="No surveys yet"
         message="Upload a drone flight to create your first survey. Large flights are best uploaded from the AgroTwin web app."
-        actionLabel="Upload a survey"
+        actionLabel="New survey"
         onAction={() => router.push("/upload")}
       />
     );
@@ -76,20 +72,27 @@ export default function SurveysScreen() {
         ListHeaderComponent={header}
         ListEmptyComponent={body ? <View>{body}</View> : null}
         renderItem={({ item }) => (
-          <SurveyCard survey={item} fieldName={fieldName.get(item.field_id)} onPress={() => router.push({ pathname: "/survey/[id]", params: { id: item.id } })} />
+          <SurveyCard
+            survey={item}
+            fieldName={fieldName.get(item.field_id)}
+            onPress={() =>
+              !["COMPLETED", "FAILED", "PENDING", "UPLOADING"].includes(item.status)
+                ? router.push({ pathname: "/processing/[surveyId]", params: { surveyId: item.id } })
+                : router.push({ pathname: "/survey/[id]", params: { id: item.id } })
+            }
+          />
         )}
-        ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 96 }]}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} colors={[colors.brand]} />}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + layout.bottomClearance }]}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} colors={[colors.accent]} progressBackgroundColor={colors.bg} />}
       />
-      <AskAiFab />
+      <AskAiFab aboveTabBar />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { gap: spacing.md, marginBottom: spacing.lg },
-  titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  filters: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  content: { paddingHorizontal: spacing.lg },
+  header: { gap: 14, marginBottom: 18 },
+  titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  content: { paddingHorizontal: layout.pagePadding },
 });

@@ -50,6 +50,17 @@ export function formatDateTime(iso: string | null | undefined): string {
   return `${(MONTHS[d.getMonth()] ?? "").slice(0, 3)} ${d.getDate()}, ${d.getFullYear()}, ${hh}:${mm}`;
 }
 
+/** "Today", "Yesterday", or "Sep 6" for older dates (canvas: "Last survey · Today"). */
+export function relativeDay(iso: string | null | undefined, now = new Date()): string {
+  const d = parse(iso);
+  if (!d) return "—";
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(now) - startOf(d)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return formatShortDate(iso);
+}
+
 /** Season (crop year) a survey belongs to — the calendar year of its date. */
 export function seasonOf(iso: string | null | undefined): string {
   const d = parse(iso);

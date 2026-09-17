@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react-native";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { HealthLegend } from "@/components/ui/HealthIndicator";
+import { HealthLegendRows } from "@/components/ui/HealthIndicator";
 import { DetectionZoneCard } from "@/components/analysis/DetectionZoneCard";
 import { ProcessingProgress } from "@/components/processing/ProcessingProgress";
 import type { DetectionZone, ProcessingJob } from "@/types";
@@ -14,35 +14,37 @@ const zone: DetectionZone = {
   recommended_action: "Ground inspection recommended",
 };
 
-describe("status UI never relies on colour alone", () => {
-  it("StatusBadge shows an emoji marker and text", async () => {
+describe("status labels never rely on colour alone", () => {
+  it("StatusBadge always renders a text label", async () => {
     await render(<StatusBadge tier="attention" />);
-    expect(screen.getByText("🟡")).toBeTruthy();
-    expect(screen.getByText("Needs Attention")).toBeTruthy();
+    expect(screen.getByText("Needs attention")).toBeTruthy();
   });
 
-  it("HealthLegend prints all three shares", async () => {
-    await render(<HealthLegend shares={{ healthy: 66, attention: 32.2, problem: 1.7 }} />);
+  it("HealthLegendRows prints all three measured shares with their labels", async () => {
+    await render(<HealthLegendRows shares={{ healthy: 66, attention: 32.2, problem: 1.7 }} />);
     expect(screen.getByText("66%")).toBeTruthy();
     expect(screen.getByText("32.2%")).toBeTruthy();
     expect(screen.getByText("1.7%")).toBeTruthy();
+    expect(screen.getByText("healthy")).toBeTruthy();
+    expect(screen.getByText("needs attention")).toBeTruthy();
+    expect(screen.getByText("problem")).toBeTruthy();
   });
 });
 
 describe("DetectionZoneCard", () => {
   it("translates the backend type into farmer language with priority and recommendation", async () => {
-    await render(<DetectionZoneCard zone={zone} areaM2={320} locationLabel="North-West area" />);
-    expect(screen.getByText(/Patchy Vegetation/)).toBeTruthy();
-    expect(screen.getByText("Medium Priority")).toBeTruthy();
-    expect(screen.getByText("North-West area")).toBeTruthy();
-    expect(screen.getByText("≈ 320 m²")).toBeTruthy();
-    expect(screen.getByText("64%")).toBeTruthy();
+    const onViewOnMap = jest.fn();
+    await render(<DetectionZoneCard zone={zone} areaM2={320} locationLabel="North-West area" onViewOnMap={onViewOnMap} />);
+    expect(screen.getByText(/Patchy vegetation/)).toBeTruthy();
+    expect(screen.getByText("Medium")).toBeTruthy();
+    expect(screen.getByText("North-West area · 320 m²")).toBeTruthy();
     expect(screen.getByText("Ground inspection recommended")).toBeTruthy();
-    expect(screen.queryByText("patchy_vegetation")).toBeNull();
+    expect(screen.queryByText(/patchy_vegetation/)).toBeNull();
   });
   it("shows the raw type only in advanced mode", async () => {
-    await render(<DetectionZoneCard zone={zone} advanced />);
-    expect(screen.getByText("patchy_vegetation")).toBeTruthy();
+    const onViewOnMap = jest.fn();
+    await render(<DetectionZoneCard zone={zone} advanced onViewOnMap={onViewOnMap} />);
+    expect(screen.getByText(/patchy_vegetation/)).toBeTruthy();
   });
 });
 
@@ -66,8 +68,10 @@ describe("ProcessingProgress", () => {
   };
   it("lists the backend's steps and marks the current one", async () => {
     await render(<ProcessingProgress job={job} />);
-    expect(screen.getByText("Creating your Digital Twin")).toBeTruthy();
-    expect(screen.getByText("Generating Orthomosaic…")).toBeTruthy();
+    expect(screen.getByText("Creating your digital twin")).toBeTruthy();
+    // "Generating Orthomosaic" appears twice: the hero's current-step line and its own row in the step list.
+    expect(screen.getAllByText("Generating Orthomosaic").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("Working")).toBeTruthy();
     expect(screen.getByText("AI Analysis")).toBeTruthy();
   });
   it("shows the failure message and a retry button", async () => {

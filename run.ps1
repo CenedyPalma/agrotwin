@@ -35,12 +35,20 @@ if (-not (Test-Path "$root\frontend\node_modules")) {
 }
 
 # stored absolute paths -> this checkout (no-op when nothing moved)
+Push-Location "$root\backend"
 & $python -m scripts.relocate_paths 2>$null | Out-Null
+Pop-Location
 
 $bind = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }
 $backendArgs = "-m uvicorn app.main:app --host $bind --port 8000"
-if ($Mode -eq "dev") { $backendArgs += " --reload" }
-$backend = Start-Process -FilePath $python -ArgumentList $backendArgs -WorkingDirectory "$root\backend" -PassThru -NoNewWindow `
+# Dev reload watches app\ only: the API never imports backend\scripts (the GPU
+# pipeline), so edits there must not restart it.
+if ($Mode -eq "dev") { $backendArgs += " --reload --reload-dir app" }
+# The backend gets its own (hidden) console. On Windows, uvicorn --reload
+# restarts its worker with CTRL_C_EVENT, which is delivered to every process
+# on the same console; with -NoNewWindow that Ctrl-C also hit this script and
+# the frontend, so every reload took the whole stack down.
+$backend = Start-Process -FilePath $python -ArgumentList $backendArgs -WorkingDirectory "$root\backend" -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput "$root\logs\backend.log" -RedirectStandardError "$root\logs\backend.err.log"
 
 $next = "node_modules\next\dist\bin\next"

@@ -28,7 +28,7 @@ Repository: `E:\Test1\agrotwin` (git, single "Initial commit" from the original 
 | Compiler | Visual Studio 2026 Build Tools, MSVC 14.44 |
 | Node | 24.11.1 |
 
-**User constraint: everything project-related must stay on E:.** Implemented via `run_gpu.ps1`, which sets `TEMP/TMP`, `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `TORCH_EXTENSIONS_DIR`, `PYTHONUTF8=1` to `E:\Test1\agrotwin\.cache\...` before launching anything. Logs go to `E:\Test1\agrotwin\logs\`. Two system-level items remain on C: pending the user's decision: the CUDA toolkit (4.1 GB) and the global `uv` package cache (3.9 GB, mostly torch wheels downloaded for this project).
+**User constraint: everything project-related must stay on E:.** Implemented via `run_gpu.ps1`, which sets `TEMP/TMP`, `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `TORCH_EXTENSIONS_DIR`, `PYTHONUTF8=1` to `E:\Test1\agrotwin\.cache\...` before launching anything. Logs go to `E:\Test1\agrotwin\logs\`. The global `uv` cache on C: (3.9 GB of torch wheels this project pulled) has been cleared; the only project-related item left on C: is the CUDA toolkit (4.1 GB), pending the user's decision (relocation needs UAC prompts).
 
 **Note on the HDD**: the Python venv is on the spinning E: drive. A cold `import torch` (~2 GB of CUDA DLLs) can take several minutes after the OS file cache is evicted; warm imports take <1 s. This is a startup cost, not a runtime cost.
 
@@ -102,7 +102,9 @@ Design (current):
 - Optimiser: per-parameter Adam, reference learning rates (`means` 1.6e-4 × 1.1, `scales` 5e-3, `quats` 1e-3, `opacities` 5e-2, `sh0` 2.5e-3, `shN` 1.25e-4), exponential decay of `means` lr to 1% over the run.
 - Loss: 0.8·L1 + 0.2·(1 − SSIM) (own 11×11 Gaussian-window SSIM). Opacity/scale regularisers default **0.0** (gsplat reference defaults).
 - Rasterization: `packed=True`, `rasterize_mode="antialiased"`, `absgrad=True`.
-- **Densification: `DefaultStrategy(absgrad=True, refine_stop_iter=15000)`** — classic gradient-driven clone/split, prune below opacity 0.005, opacity reset every 3,000 steps. Hard cap enforced by pruning the faintest splats when N exceeds `--cap-max` (skipped on reset steps).
+- **Densification (final): `DefaultStrategy(refine_every=500, pause_refine_after_reset=500, grow_scale3d=4 cm in metric units, refine_stop_iter=15000)`**, `absgrad=False`, gradient threshold at the reference default 0.0002 — classic gradient-driven clone/split, prune below opacity 0.005, opacity reset every 3,000 steps. Hard cap enforced by pruning the faintest splats when N exceeds `--cap-max` (never inside the post-reset pause). Training resolution **1200 px** (build_splats `--train-image-size`, default now 1200; the 2400 px undistorted workspace is kept as `undistorted_2400/`).
+- **Ground band**: per-2 m-cell median height of the SfM points; each splat clamped to [−1.0, +1.5] m of its cell after every step (`--ground-below-m/--ground-above-m`; trees at the margins are flattened — the pipeline's documented 2.5D limitation).
+- **Checkpoint renders**: a fixed training view (photo | render, native-resolution centre crop) is written as `exports/check_step{N}.png` at every checkpoint with its L1 — the sharpness trend that the loss number does not show.
 - **Scale clamp**: each Gaussian's longest axis ≤ 1.0 m (in normalised log-space) after every optimiser step.
 - Data loading: 8-thread PIL decode prefetcher, pinned memory, JPEG bytes cached in RAM (≤8 GB) after first read from the HDD.
 - Checkpoints (`exports/checkpoint.pt`: step, all params, optimiser states) + `splat.ply` + a geometry sanity line every 2,000 steps; resume re-derives the lr schedule for the current run length.
@@ -116,9 +118,14 @@ Design (current):
 | 2 | normalised, MCMC cap 3M, reg 0.01 | **CUDA OOM at step 4,500** (`isect_tiles` tried 11.45 GiB) | Memory 3.8 GB @1.6M → 19.2 GB @2.6M (spilled to system RAM, 8× slowdown). Bloated low-opacity Gaussians covering hundreds of tiles each. |
 | 3 | normalised, MCMC cap 2M, reg 0.01, scale clamp 1 m | completed 30k steps (198 min), memory flat 3.2 GB — **but unusable** | Only 38,007 / 2M splats had opacity > 0.12; Σopacity = 27k; render = blurry blobs with a hole. Log: **1.4–1.65M of 2M splats relocated every 100 steps** (73–82%); L1 never improved after step ~3,000 (0.12–0.30 noise for 27k steps). Root cause: MCMC's random jitter + nadir-only, near-planar capture — a splat can slide along its view ray unpunished in its own view, renders wrongly in neighbours, dies, is respawned. Vertical spread grew 4.6 m → 12 m. |
 | 4 (probe) | normalised, **DefaultStrategy**, reg 0, cap 2M, clamp 1 m, 3,000 steps | **correct behaviour** (15.3 min) | 0 splats pruned by the strategy; strategy requests +300–670k splats per refine (capped); 89% opacity > 0.12; geometry p1/median/p99 = −12.9 / −11.3 / −7.9 m (ground truth from SfM: −11.6 m; cameras at 0). Render vs photo: L1 0.109 (vs 0.180 for #3); all structure present (soil strip, rows, no holes), ~10 cm blob resolution at 3k steps. Tiled: 1,773,842 splats, 28.9 MB SPZ — **currently live in the viewer**. |
-| **5 (running)** | resumed from #4 at step 3,000, cap raised to **3M**, 30,000 steps | in progress: step 8,000 at 04:26, memory 4.8 GB, 100% opacity > 0.12, 100% within 15 m of ground, ~2.9 steps/s, **ETA ≈ 06:30** | Tiles to Cesium automatically on completion. |
+| 5 | resumed from #4, cap 3M, 30k steps, 2400 px | completed (265 min) — **unusable**: uniform colour wash, check L1 0.124 | **Vertical drift**: median splat height rose −11.3 → −6.5 m over the run (1% at camera height). Nadir-only capture gives no depth constraint; a splat slides up its view ray, covers most of one frame, and no neighbour objects. Fix: **`GroundBand`** — per-2 m-cell median of the SfM points, every splat clamped to [−1.0, +1.5] m of it after each step. Verified: 0% of real SfM points moved by the clamp; a 5 m artificial lift is pulled back. |
+| 6 | + ground band, `absgrad=True`, 2400 px | completed — **blur**, softer than its own 3k-step probe; check L1 0.110 | Poses were fine (reprojection 1.13 px @ 5280 px ≈ 0.5 px at 2400). Cause: `absgrad=True` with `grow_grad2d` left at 0.0002 (gsplat docs: use 0.0008 with absgrad) → 4× over-densification; the 3M cap pruned **17M "faintest" splats over the run** — the newest, finest ones — leaving only large blobs. |
+| 7 | + `grow_grad2d=0.0008`, `pause_refine_after_reset=500`, checkpoint renders | stopped at 4k — blur unchanged | Log: ~25k duplicated vs ~2.5k split per refine. **`grow_scale3d` (split-vs-duplicate size test) is a fraction of `scene_scale`**; with 79 m normalised to 1.0 the default 0.01 meant "anything under 0.87 m is small" → every splat duplicated at its ~18 cm init size, **nothing ever split** — ~25 px of blur at 2400 px forever. Fix: metric threshold, split above 4 cm. |
+| 8 | + 4 cm split threshold, 2400 px | stopped at 4k — check L1 **rising** 0.175 → 0.302 | Splitting worked (580k/refine) but growth became a runaway again: +1.4M requested per refine, cap culling 60% of the model every 100 steps. |
+| 9 | **1200 px**, plain reference gradient defaults (no absgrad, 0.0002) | stopped at 4k — sharpening (0.122 → 0.116) but **black holes** in the render | Same churn (~1M/refine). Root cause read from gsplat source: the test is `grad2d / count` over the refine window; on the scenes the defaults were tuned for, `count` is dozens of views. Here **each frame covers 0.9% of the field, so in a 100-step window a splat is seen ~0.65 times** — the "average" is one noisy sample and noise alone clears the threshold. |
+| **10 — final** | 1200 px, `refine_every=500`, ground band, 4 cm split, 1 m clamp, 3M cap, reg 0 | **completed in 47 min. Check L1 0.071** (mid frame), 0.125 (edge frame). Geometry p1/median/p99 −12.8 / −10.4 / −6.4 m, 100% opaque, 6.4 GB. **2,999,876 splats tiled, SPZ 67.9 MB.** | Controlled, split-dominated growth (770k → 956k → 1.4M → 2.2M → 3M by step 6k), one cap prune. Render: rows, soil strip, plant clusters, residue straw and the survey target all resolve; no holes. Painterly at 100% zoom (≈10 cm effective resolution from 3M splats over 2.5 ha). |
 
-Reference for the "bad" run #3 vs probe #4, same frame `DJI_20260603150410_0026_D.JPG`: render L1 0.180 → 0.109.
+Check-frame history on `DJI_20260603150410_0026_D.JPG` (photo | render at native resolution, saved every 2,000 steps by the trainer): run #3 0.180 → probe #4 0.109 → run #5 0.124 → run #6 0.110 → run #10 0.105 (2k) → 0.100 (6k) → **0.071 (30k)**. Images: `data/splats/8dab5067ab14/exports/check_step*.png`; failed runs' artefacts kept under `data/splats/8dab5067ab14/failed_*/` and `run9_1200px_churn/`.
 
 ### 4.6 3D Tiles export
 `backend/scripts/tile_splats_spz.py` (existing, modified to remove the external dependency): prunes floaters (±15 m of ground plane, opacity > 0.12, longest axis < 1.5 m, radius < 100 m, vertical needles), recentres on the AABB midpoint, encodes **SPZ v2** (Niantic) inside a glTF with `KHR_gaussian_splatting` + `KHR_gaussian_splatting_compression_spz_2` — the only splat format CesiumJS 1.145 draws. Places the cloud's ground plane on the ellipsoid (the viewer renders no terrain). The frontend probes `/splats/<survey_id>/tileset.json` with a HEAD request; no restart needed when it changes.
@@ -159,13 +166,12 @@ Async job runner (`app/services/job_runner.py`, `/process`, `/mosaic`, `/recompu
 
 ## 8. Open items
 
-1. Training run #5 completing (~06:30) and its tileset replacing the probe's.
-2. `build_dense.py` for 3D Twin mode (DSM / DTM / point cloud / textured mesh) — script fixed, not yet run.
-3. `docs/PHASE_STATUS.md` Phase 9 line should reference this 40 ft survey's products once they exist.
-4. User decision: relocate the CUDA toolkit off C: (reinstall to E:, needs a UAC prompt) and/or clear the global uv cache.
-5. Crop type of the field is a placeholder ("soybean") — no update endpoint existed at ingestion time.
-6. **No weed/disease detector exists** — analysis is a vegetation index. A trained model needs labelled data.
-7. Nothing is committed; 61 changed/untracked paths in `git status`. The user has not asked for a commit.
+1. ~~Splat model~~ **Done** (run #10, see §4.5). ~~build_dense~~ **Done**: 3D Twin products built from the SfM cloud (`--source sparse`, now the default): 509k-point cloud, 0.5 m DSM (259–265 m ellipsoidal), bare-earth DTM, 108k-vertex textured mesh — verified in the viewer by a parallel session. ~~Phase 9 doc line~~ **Done**. ~~uv cache~~ **Cleared** (3.9 GB returned to C:).
+2. User decision still open: relocate the CUDA toolkit (4.1 GB) off C: — reinstall to E:, needs UAC prompts the user must click.
+3. Crop type of the field is a placeholder ("soybean"); a parallel session added `PATCH /api/fields/{id}` so it can be corrected.
+4. **No weed/disease detector exists** — analysis is a vegetation index. A trained model needs labelled data.
+5. Git: two local commits on branch `V1.1` by a parallel session (`df1510d` port + MVP + mobile client, `da29c68` build_dense from SfM), nothing pushed. Uncommitted since then: `gsplat_train.py` / `build_splats.py` (runs #7–#10 fixes), this report, the Phase 9 doc line, and the mobile design pass.
+6. Quality ceiling worth knowing: 3M splats over 2.5 ha ≈ one per 10 cm; rows, soil, plant clusters and residue resolve, individual leaves do not. The 2 cm orthomosaic remains the sharp 2D product. More splats would need more VRAM (6.4 GB used of 16 at 3M / 1200 px — a 5M cap is plausible on this card).
 
 ## 9. Files of record
 
@@ -176,8 +182,8 @@ Async job runner (`app/services/job_runner.py`, `/process`, `/mosaic`, `/recompu
 
 ## 10. Questions worth analysing
 
-1. Is a **3M-splat cap** (~1 per 10 cm over 2.5 ha) the right ceiling for a 16 GB card at 2400 px, or would more steps at 2M / fewer at 4M give a better visual result? Memory headroom exists (4.8 GB used).
-2. Would **stronger multi-view constraints** (e.g. a depth/planarity prior, or adding the 3D Twin's DSM as supervision) improve a nadir-only capture where 3DGS has weak depth cues?
-3. Is building **COLMAP + Ceres + cuDSS** from source worth it for GPU bundle adjustment here (mapping was 72 min of the ~4 h pipeline)?
-4. `DefaultStrategy` keeps requesting +300–670k splats per refine against the cap — is the `grow_grad2d` threshold (0.0002) too low for 2400 px imagery with fine residue texture, i.e. would a higher threshold converge to a better-allocated model?
-5. The MCMC failure mode (relocation storm on near-planar, nadir-only data) may be worth documenting as a known limitation for this class of survey.
+1. **Splat budget vs VRAM**: run #10 used 6.4 GB at 3M splats / 1200 px. A 5M cap should fit in 16 GB and would push effective resolution from ~10 cm toward ~7 cm. Is the visual gain worth ~2x training time, given the painterly look is inherent to 3DGS?
+2. **Depth supervision**: the ground band is a hard clamp derived from SfM. A softer alternative — a depth loss against the SfM-derived DSM (now built by `build_dense.py`) — might preserve crop-canopy relief better than a flat band. Worth testing on the crop rows.
+3. **Refine window vs survey size**: `refine_every` should scale with (survey area / frame footprint) so each splat gets a stable gradient average. Here 500 steps ≈ 3 observations; is ~10 (i.e. `refine_every` ≈ 1500) better, or does it starve densification before `refine_stop_iter`?
+4. **GPU bundle adjustment**: mapping was 72 of ~170 total pipeline minutes. Building COLMAP + Ceres + cuDSS from source on Windows would move it to the GPU; it's a multi-hour build with real failure risk.
+5. **General lesson for the docs**: every 3DGS failure here was the reference recipe's normalised-scene assumptions meeting a large, flat, nadir-only survey. The fixes (scene normalisation + metric thresholds for size, a ground band, a refine window sized to observations-per-splat, training at ~1200 px) are likely the recipe for any drone-grid survey and should be the defaults for this pipeline.

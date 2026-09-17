@@ -3,7 +3,7 @@ import { ApiError, describeError } from "@/services/errors";
 describe("describeError", () => {
   it("gives farmer-friendly copy for an offline backend", () => {
     const d = describeError(new ApiError("offline", "Network request failed", { path: "/api/fields" }));
-    expect(d.title).toBe("Cannot connect to AgroTwin");
+    expect(d.title).toBe("Unable to reach AgroTwin");
     expect(d.retryable).toBe(true);
     expect(d.technical).toContain("/api/fields");
   });

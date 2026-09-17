@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, StyleSheet, useWindowDimensions, View } from "react-native";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { Images } from "lucide-react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { Images, LayoutGrid, List } from "lucide-react-native";
 import { galleryPageSize } from "@/constants/config";
 import { BAND_LABEL } from "@/constants/labels";
-import { spacing } from "@/constants/theme";
+import { iconStroke, layout } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { useSurvey, useSurveyImages } from "@/features/surveys/hooks";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -12,11 +12,12 @@ import { useUiStore } from "@/stores/uiStore";
 import { surveysService } from "@/services/surveys";
 import type { SurveyImage } from "@/types";
 import { formatNumber } from "@/utils/format";
-import { Button, Chip, EmptyState, ErrorState, LoadingState, Screen, AppText } from "@/components/ui";
+import { Button, Chip, EmptyState, ErrorState, IconButton, LoadingState, Screen, ScreenHeader, AppText } from "@/components/ui";
 import { ImageTile } from "@/components/gallery/ImageTile";
 import { ImageViewerModal } from "@/components/gallery/ImageViewerModal";
 
-const COLUMNS = 3;
+const COLUMNS = 2;
+const GAP = 10;
 
 export default function GalleryScreen() {
   const { surveyId, frame } = useLocalSearchParams<{ surveyId: string; frame?: string }>();
@@ -29,6 +30,7 @@ export default function GalleryScreen() {
   const survey = useSurvey(surveyId);
   const images = useSurveyImages(surveyId);
   const [band, setBand] = useState<string>("RGB");
+  const [view, setView] = useState<"grid" | "list">("grid");
   const [pages, setPages] = useState(1);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
@@ -42,15 +44,12 @@ export default function GalleryScreen() {
   }, [images.data]);
   const effectiveBand = bands.includes(band) ? band : (bands[0] ?? "RGB");
 
-  /** One entry per shutter release for the chosen band, oldest first (mirrors the web app's frame grouping). */
   const list = useMemo(() => {
-    const all = images.data ?? [];
-    const filtered = all.filter((i) => i.band === effectiveBand);
+    const filtered = (images.data ?? []).filter((i) => i.band === effectiveBand);
     return [...filtered].sort((a, b) => (a.captured_at ?? "").localeCompare(b.captured_at ?? "") || a.filename.localeCompare(b.filename));
   }, [images.data, effectiveBand]);
   const visible = useMemo(() => list.slice(0, pages * galleryPageSize), [list, pages]);
 
-  // Deep link: /gallery/<id>?frame=<frame_key> opens that frame.
   useEffect(() => {
     if (!frame || list.length === 0) return;
     const i = list.findIndex((img) => (img.frame_key ?? img.id) === frame);
@@ -60,80 +59,95 @@ export default function GalleryScreen() {
     }
   }, [frame, list]);
 
-  const tileSize = Math.floor((width - spacing.lg * 2 - spacing.sm * (COLUMNS - 1)) / COLUMNS);
+  const tileWidth = Math.floor((width - layout.pagePadding * 2 - GAP * (COLUMNS - 1)) / COLUMNS);
   const thumbUrl = useCallback((img: SurveyImage) => surveysService.thumbnailUrl(img.survey_id, img.id), []);
   const displayUrl = useCallback((img: SurveyImage) => surveysService.displayUrl(img.survey_id, img.id), []);
-  const title = survey.data ? `${formatNumber(list.length)} images` : "Drone images";
+  const subtitle = survey.data ? `${formatNumber(list.length || survey.data.image_count)} images · ${survey.data.drone_model ?? "unknown drone"}` : null;
+
+  const header = (
+    <ScreenHeader
+      title="Survey images"
+      subtitle={subtitle}
+      right={
+        <IconButton
+          icon={view === "grid" ? <List size={20} color={colors.text} strokeWidth={iconStroke} /> : <LayoutGrid size={20} color={colors.text} strokeWidth={iconStroke} />}
+          accessibilityLabel={view === "grid" ? "Show as list" : "Show as grid"}
+          onPress={() => setView((v) => (v === "grid" ? "list" : "grid"))}
+        />
+      }
+    />
+  );
 
   if (images.isPending) {
     return (
-      <Screen>
-        <Stack.Screen options={{ title }} />
-        <LoadingState message="Loading image list…" />
+      <Screen safeTop padded={false}>
+        {header}
+        <View style={styles.body}>
+          <LoadingState cards={2} />
+        </View>
       </Screen>
     );
   }
   if (images.isError) {
     return (
-      <Screen>
-        <Stack.Screen options={{ title }} />
+      <Screen safeTop padded={false}>
+        {header}
         <ErrorState error={images.error} onRetry={() => images.refetch()} />
       </Screen>
     );
   }
   if ((images.data ?? []).length === 0) {
     return (
-      <Screen>
-        <Stack.Screen options={{ title }} />
-        <EmptyState icon={<Images size={28} color={colors.brand} />} title="No images in this survey" message="Upload drone images from the Upload screen or the web app." actionLabel="Upload" onAction={() => router.push({ pathname: "/upload", params: { surveyId } })} />
+      <Screen safeTop padded={false}>
+        {header}
+        <EmptyState icon={<Images size={52} color={colors.accent} strokeWidth={1.2} />} title="No images in this survey" message="Add drone images from the New survey screen or the web app." actionLabel="Add images" onAction={() => router.push({ pathname: "/upload", params: { surveyId } })} />
       </Screen>
     );
   }
 
   return (
-    <Screen scroll={false}>
-      <Stack.Screen options={{ title }} />
+    <Screen scroll={false} safeTop>
       <FlatList
+        key={view}
         data={visible}
         keyExtractor={(i) => i.id}
-        numColumns={COLUMNS}
-        columnWrapperStyle={styles.row}
+        numColumns={view === "grid" ? COLUMNS : 1}
+        columnWrapperStyle={view === "grid" ? styles.row : undefined}
         contentContainerStyle={styles.content}
         ListHeaderComponent={
-          <View style={styles.header}>
-            <AppText variant="caption" tone="muted">
-              {survey.data?.name} · thumbnails load as you scroll
-            </AppText>
+          <View>
+            {header}
             {bands.length > 1 ? (
               <View style={styles.bands}>
                 {bands.map((b) => (
-                  <Chip key={b} label={BAND_LABEL[b] ?? b} selected={effectiveBand === b} onPress={() => { setBand(b); setPages(1); }} />
+                  <Chip
+                    key={b}
+                    label={BAND_LABEL[b] ?? b}
+                    selected={effectiveBand === b}
+                    onPress={() => {
+                      setBand(b);
+                      setPages(1);
+                    }}
+                  />
                 ))}
               </View>
             ) : null}
           </View>
         }
-        renderItem={({ item, index }) => <ImageTile image={item} index={index} size={tileSize} thumbnailUrl={thumbUrl(item)} onPress={() => setViewerIndex(index)} />}
+        renderItem={({ item, index }) => <ImageTile image={item} index={index} layout={view} width={tileWidth} thumbnailUrl={thumbUrl(item)} onPress={() => setViewerIndex(index)} />}
+        ItemSeparatorComponent={() => <View style={{ height: view === "grid" ? GAP : 8 }} />}
         onEndReached={() => visible.length < list.length && setPages((p) => p + 1)}
         onEndReachedThreshold={0.6}
         ListFooterComponent={
-          visible.length < list.length ? (
-            <View style={styles.footer}>
-              <AppText variant="caption" tone="muted">
-                Showing {formatNumber(visible.length)} of {formatNumber(list.length)}
-              </AppText>
-              <Button label="Load more" variant="outline" size="sm" onPress={() => setPages((p) => p + 1)} />
-            </View>
-          ) : (
-            <View style={styles.footer}>
-              <AppText variant="caption" tone="muted">
-                All {formatNumber(list.length)} images listed
-              </AppText>
-            </View>
-          )
+          <View style={styles.footer}>
+            <AppText variant="small" tone="muted">
+              {visible.length < list.length ? `Showing ${formatNumber(visible.length)} of ${formatNumber(list.length)} · thumbnails load as you scroll` : `All ${formatNumber(list.length)} images listed`}
+            </AppText>
+            {visible.length < list.length ? <Button label="Load more" variant="secondary" onPress={() => setPages((p) => p + 1)} /> : null}
+          </View>
         }
-        initialNumToRender={18}
-        maxToRenderPerBatch={18}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
         windowSize={7}
         removeClippedSubviews
       />
@@ -141,6 +155,7 @@ export default function GalleryScreen() {
         images={list}
         index={viewerIndex}
         displayUrl={displayUrl}
+        drone={survey.data?.drone_model}
         onClose={() => setViewerIndex(null)}
         onChangeIndex={setViewerIndex}
         advanced={advanced}
@@ -154,9 +169,9 @@ export default function GalleryScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xxl },
-  row: { gap: spacing.sm, marginBottom: spacing.sm },
-  header: { gap: spacing.sm, paddingVertical: spacing.md },
-  bands: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  footer: { alignItems: "center", gap: spacing.sm, paddingVertical: spacing.lg },
+  body: { paddingHorizontal: layout.pagePadding },
+  content: { paddingHorizontal: layout.pagePadding, paddingBottom: 40 },
+  row: { gap: GAP },
+  bands: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
+  footer: { alignItems: "center", gap: 10, paddingVertical: 20 },
 });

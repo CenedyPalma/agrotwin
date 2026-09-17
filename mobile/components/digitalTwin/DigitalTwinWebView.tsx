@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { spacing } from "@/constants/theme";
+import { immersive } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { ApiError } from "@/services/errors";
 import { getWebViewerUrl } from "@/services/runtimeConfig";
@@ -113,7 +113,7 @@ export const DigitalTwinWebView = forwardRef<DigitalTwinHandle, DigitalTwinWebVi
 
   if (!url) {
     return (
-      <View style={[styles.fill, { backgroundColor: colors.background }]}>
+      <View style={[styles.fill, { backgroundColor: colors.bg }]}>
         <ErrorState error={new ApiError("not_configured", "Web viewer address not configured")} title="Web viewer address not set" />
       </View>
     );
@@ -121,8 +121,8 @@ export const DigitalTwinWebView = forwardRef<DigitalTwinHandle, DigitalTwinWebVi
 
   if (error) {
     return (
-      <View style={[styles.fill, { backgroundColor: colors.background }]}>
-        <ErrorState error={error} onRetry={reload} title="Digital Twin could not load" />
+      <View style={[styles.fill, { backgroundColor: colors.bg }]}>
+        <ErrorState error={error} onRetry={reload} title="Digital twin unavailable" />
         <AppText variant="caption" tone="muted" style={styles.hint} selectable>
           {url}
         </AppText>
@@ -136,7 +136,7 @@ export const DigitalTwinWebView = forwardRef<DigitalTwinHandle, DigitalTwinWebVi
         key={attempt}
         ref={webRef}
         source={{ uri: url }}
-        style={[styles.fill, { backgroundColor: "#0b0f0c" }]}
+        style={[styles.fill, { backgroundColor: immersive.bg }]}
         originWhitelist={["http://*", "https://*"]}
         injectedJavaScriptBeforeContentLoaded={injectedBeforeLoad}
         onMessage={handleMessage}
@@ -160,11 +160,13 @@ export const DigitalTwinWebView = forwardRef<DigitalTwinHandle, DigitalTwinWebVi
         accessibilityLabel="Digital Twin 3D viewer"
       />
       {loading ? (
-        <View style={[styles.overlay, { backgroundColor: colors.background }]} accessibilityRole="progressbar" accessibilityLabel="Loading Digital Twin">
-          <ActivityIndicator size="large" color={colors.brand} />
-          <AppText variant="heading">Loading Digital Twin…</AppText>
-          <AppText variant="caption" tone="muted" style={styles.hint}>
-            The 3D viewer and field imagery are streamed from your AgroTwin computer.
+        <View style={[styles.overlay, { backgroundColor: immersive.bg }]} accessibilityRole="progressbar" accessibilityLabel="Loading digital twin">
+          <ActivityIndicator size="large" color={colors.accent} />
+          <AppText variant="tagUpper" tone="inverseMuted" style={{ letterSpacing: 1.8 }}>
+            3D viewer loading
+          </AppText>
+          <AppText variant="small" style={[styles.hint, { color: immersive.textFaint }]}>
+            Cesium scene renders here — streamed from your AgroTwin computer.
           </AppText>
         </View>
       ) : null}
@@ -174,6 +176,6 @@ export const DigitalTwinWebView = forwardRef<DigitalTwinHandle, DigitalTwinWebVi
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  overlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.xl },
-  hint: { textAlign: "center", paddingHorizontal: spacing.xl },
+  overlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center", gap: 12, padding: 24 },
+  hint: { textAlign: "center", paddingHorizontal: 40 },
 });

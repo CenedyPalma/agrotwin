@@ -1,7 +1,7 @@
-import { priorityLabel, severityTier } from "@/constants/labels";
+import { priorityLabel, SEVERITY_LABEL, severityTier } from "@/constants/labels";
 import { StatusBadge } from "@/components/ui";
 
-/** "🟡 Medium Priority" / "🔴 High Priority" for a detection zone. */
-export function PriorityBadge({ severity, size = "sm" }: { severity: string; size?: "sm" | "md" }) {
-  return <StatusBadge tier={severityTier(severity)} label={priorityLabel(severity)} size={size} />;
+/** Outlined "Medium priority" tag coloured by severity (high → problem, medium → attention, low → accent). */
+export function PriorityBadge({ severity, short = false }: { severity: string; short?: boolean }) {
+  return <StatusBadge tier={severityTier(severity)} label={short ? (SEVERITY_LABEL[severity] ?? severity) : priorityLabel(severity)} />;
 }

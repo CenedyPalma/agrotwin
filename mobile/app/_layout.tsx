@@ -1,7 +1,17 @@
+import { useEffect } from "react";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
+import { useFonts } from "expo-font";
+import { Barlow_400Regular } from "@expo-google-fonts/barlow/400Regular";
+import { Barlow_500Medium } from "@expo-google-fonts/barlow/500Medium";
+import { Barlow_600SemiBold } from "@expo-google-fonts/barlow/600SemiBold";
+import { Barlow_700Bold } from "@expo-google-fonts/barlow/700Bold";
+import { BarlowCondensed_600SemiBold } from "@expo-google-fonts/barlow-condensed/600SemiBold";
 import { useTheme } from "@/hooks/useTheme";
 import { AppProviders } from "@/providers/AppProviders";
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function RootStack() {
   const { colors, isDark } = useTheme();
@@ -10,33 +20,38 @@ function RootStack() {
       <StatusBar style={isDark ? "light" : "dark"} />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: colors.background },
-          headerTintColor: colors.text,
-          headerTitleStyle: { fontWeight: "600" },
-          headerShadowVisible: false,
-          headerBackButtonDisplayMode: "minimal",
-          contentStyle: { backgroundColor: colors.background },
+          // Every screen draws its own header from the design (ScreenHeader).
+          headerShown: false,
+          contentStyle: { backgroundColor: colors.bg },
           animation: "slide_from_right",
         }}
       >
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="field/[id]" options={{ title: "Field" }} />
-        <Stack.Screen name="survey/[id]" options={{ title: "Survey" }} />
-        <Stack.Screen name="analysis/[surveyId]" options={{ title: "Analysis" }} />
-        <Stack.Screen name="gallery/[surveyId]" options={{ title: "Drone images" }} />
-        <Stack.Screen name="map/[surveyId]" options={{ headerShown: false }} />
-        <Stack.Screen name="twin/[surveyId]" options={{ headerShown: false }} />
-        <Stack.Screen name="ai/chat" options={{ title: "Ask AgroTwin AI" }} />
-        <Stack.Screen name="upload/index" options={{ title: "Upload" }} />
-        <Stack.Screen name="settings/index" options={{ title: "Settings" }} />
-        <Stack.Screen name="+not-found" options={{ title: "Not found" }} />
+        <Stack.Screen name="index" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="map/[surveyId]" options={{ animation: "fade" }} />
+        <Stack.Screen name="twin/[surveyId]" options={{ animation: "fade" }} />
+        <Stack.Screen name="ai/chat" options={{ animation: "slide_from_bottom" }} />
       </Stack>
     </>
   );
 }
 
 export default function RootLayout() {
+  // The Industry design system: Barlow Condensed headings over Barlow body.
+  const [fontsLoaded, fontError] = useFonts({
+    Barlow_400Regular,
+    Barlow_500Medium,
+    Barlow_600SemiBold,
+    Barlow_700Bold,
+    BarlowCondensed_600SemiBold,
+  });
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) SplashScreen.hideAsync().catch(() => {});
+  }, [fontsLoaded, fontError]);
+
+  if (!fontsLoaded && !fontError) return null;
+
   return (
     <AppProviders>
       <RootStack />

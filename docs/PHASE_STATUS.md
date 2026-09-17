@@ -61,14 +61,23 @@ Roadmap phases per the original spec, and what's actually done.
       (SPZ-compressed KHR_gaussian_splatting 3D Tiles — the only form Cesium
       1.145 draws), `build_dense.py` (dense cloud, DSM, textured 2.5D terrain
       mesh). Proven end to end on the original 230-frame multispectral
-      survey. For the 1,378-frame 40 ft survey (2026-09-14): SfM is done
+      survey. For the 1,378-frame 40 ft survey (2026-09-14): SfM done
       (1,378/1,378 frames registered, 770k points, 0.48 m median residual to
-      the RTK positions), but the 3DGS training is **still in progress** —
-      the first full runs drifted upward along the nadir-only view rays
-      (median splat height ended ~5 m above the SfM ground; the cloud is a
-      ~12 m thick smear), so the tileset currently under
-      `frontend/public/splats/8dab5067ab14/` is NOT a usable reconstruction;
-      a ground-band constraint is being added to the trainer. **3D Twin mode
+      the RTK positions, 1.1 px reprojection error) and **the 3DGS model is
+      done**: 2,999,876 splats, SPZ tileset 67.9 MB under
+      `frontend/public/splats/8dab5067ab14/`, check-frame L1 0.071 against
+      the source photo (rows, soil strip, residue and the survey target all
+      resolve; ~10 cm effective resolution — 3M splats over 2.5 ha). It took
+      ten runs to get there, and the failures are documented in
+      `docs/STATUS_REPORT_2026-09-14.md` §4.5 because every one was a
+      mismatch between gsplat's reference recipe and a large, flat,
+      nadir-only survey: scene normalisation (79 m → 1) made MCMC's noise
+      and the split/duplicate size threshold wrong by 70×; MCMC relocation
+      storms on near-planar data; splats drifting up the view rays
+      (fixed with a per-cell ground band from the SfM points); and the
+      densification gradient test averaging a single noisy observation per
+      splat per 100-step window because each frame covers 0.9 % of the field
+      (fixed with a 500-step window at 1200 px). **3D Twin mode
       is real for this survey**: `build_dense.py --source sparse` (now the
       default) builds the dense products from the SfM's 760,597 triangulated
       points (≥3 views, 97.3 % within ±3 m of the ground plane) instead of
@@ -114,10 +123,14 @@ Roadmap phases per the original spec, and what's actually done.
 - Thermal stays disabled — no thermal band in either dataset.
 - PPK post-processing is not run (no base-station data); the drones flew with
   network RTK and positions are used as recorded, with fix quality shown.
-- The 40 ft survey's Gaussian-splat model is pending a retrained model (see
-  Phase 9); Photorealistic mode is the only viewer feature without usable
-  data for this survey. The 3D Twin's terrain / elevation / point-cloud
-  layers come from the SfM cloud and are real.
+- The 40 ft survey now has real data in every viewer mode (splat model,
+  terrain / elevation / point cloud from the SfM cloud). The splat model is
+  a nadir-only capture: it holds up from above and degrades at grazing
+  angles — add oblique passes to the next flight for a view from any angle.
+- The Next.js dev server only serves its client chunks to origins it knows;
+  `next.config.ts` allows 127.0.0.1 and every address of this machine's
+  interfaces (LAN, Tailscale) automatically, plus `AGROTWIN_DEV_ORIGINS`.
+  A production build (`run.ps1` without `dev`) has no such restriction.
 - The field's crop type was set to "soybean" at ingest as a placeholder —
   correct it with the pencil on the field page (`PATCH /api/fields/{id}`).
 - The CUDA toolkit (4.1 GB) and the global uv cache (3.9 GB) still live on

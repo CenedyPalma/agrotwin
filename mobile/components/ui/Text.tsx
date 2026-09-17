@@ -1,27 +1,44 @@
 import { Text, type TextProps } from "react-native";
 import { typography } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
+import { immersive } from "@/constants/theme";
 
 export type TextVariant = keyof typeof typography;
-export type TextTone = "default" | "muted" | "brand" | "onBrand" | "healthy" | "attention" | "problem" | "info";
+export type TextTone =
+  | "default"
+  | "muted"
+  | "soft"
+  | "faint"
+  | "accent"
+  | "onAccent"
+  | "healthy"
+  | "attention"
+  | "problem"
+  | "inverse"
+  | "inverseMuted";
 
 export interface AppTextProps extends TextProps {
   variant?: TextVariant;
   tone?: TextTone;
+  /** Tabular figures for numbers that change. */
+  tabular?: boolean;
 }
 
-/** Themed text. Always use this instead of the bare RN Text so colours follow the theme. */
-export function AppText({ variant = "body", tone = "default", style, ...rest }: AppTextProps) {
+/** Themed text. Always use this instead of the bare RN Text so fonts and colours follow the tokens. */
+export function AppText({ variant = "body", tone = "default", tabular, style, ...rest }: AppTextProps) {
   const { colors } = useTheme();
-  const color =
-    tone === "muted"
-      ? colors.textMuted
-      : tone === "brand"
-        ? colors.brand
-        : tone === "onBrand"
-          ? colors.onBrand
-          : tone === "default"
-            ? colors.text
-            : colors[tone];
-  return <Text {...rest} style={[typography[variant], { color }, style]} />;
+  const color = {
+    default: colors.text,
+    muted: colors.muted,
+    soft: colors.soft,
+    faint: colors.faint,
+    accent: colors.accent,
+    onAccent: colors.onAccent,
+    healthy: colors.healthy,
+    attention: colors.attention,
+    problem: colors.problem,
+    inverse: immersive.text,
+    inverseMuted: immersive.textMuted,
+  }[tone];
+  return <Text {...rest} style={[typography[variant], { color }, tabular && { fontVariant: ["tabular-nums"] }, style]} />;
 }

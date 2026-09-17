@@ -128,8 +128,31 @@ npm run tunnel          # if phone and laptop are on different networks (slower)
 - **Expo Go (phone):** install Expo Go, scan the QR code printed by `npm start`.
   Phone and laptop must be on the same Wi-Fi. Everything in this app runs in
   Expo Go (maps, WebView, pickers, location, secure store).
+- **Phone NOT on the laptop's Wi-Fi (e.g. mobile data):** install
+  [Tailscale](https://tailscale.com) on both devices, signed in to the same
+  account — they then share a private network wherever they are, with nothing
+  exposed to the internet. Three things must use the laptop's Tailscale IP
+  (`tailscale ip -4`, e.g. `100.73.248.92`):
+  1. `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_WEB_VIEWER_URL` in `.env`.
+  2. The servers, started with `.\run.ps1 dev -Lan` (they bind `0.0.0.0`, which
+     includes the Tailscale interface).
+  3. **Metro itself.** The QR code encodes the Wi-Fi IP by default, so Expo Go
+     hangs on "loading" and then reports "something went wrong". Create
+     `mobile/.env.local` (git-ignored; Expo refuses this key in plain `.env`):
+     ```
+     REACT_NATIVE_PACKAGER_HOSTNAME=100.73.248.92
+     ```
+     Restart `npm start` and the QR code is right. Without it, use Expo Go's
+     **Enter URL manually** → `exp://100.73.248.92:8081`.
 - **Android Emulator:** start an AVD in Android Studio, then `npm run android`.
   Use `10.0.2.2` in `.env`.
+- **Web preview (`npm run web`)** works for every screen except the field map,
+  which shows a "use the mobile app" placeholder there instead of a real map —
+  `react-native-maps` has no web build and crashes on import, and Expo Router
+  loads every route up front, so without the placeholder the *entire* app
+  failed to load on web, not just that screen (`components/map/MapViewer.web.tsx`,
+  `ZoneMarkers.web.tsx`). The Digital Twin screen (`react-native-webview`) works
+  normally on web.
 - **Development build** (only needed later for a store build or custom native
   code): `npx expo prebuild --platform android && npx expo run:android`.
   Set `GOOGLE_MAPS_ANDROID_API_KEY` in the environment first — `react-native-maps`
@@ -165,10 +188,12 @@ Manual checklist (with the backend running and the "40 ft RGB Site" survey loade
 | "Cannot connect to AgroTwin" on the phone, works in the laptop browser | backend bound to 127.0.0.1 → start uvicorn with `--host 0.0.0.0`; check the firewall rule; confirm same Wi-Fi (guest networks often isolate clients) |
 | Works on emulator, not on phone | `.env` still says `10.0.2.2` or `localhost` → use the LAN IP, restart `expo start` |
 | Map shows no photo map | tile pyramid not built for that survey (`backend/scripts/build_tiles.py`) or `EXPO_PUBLIC_WEB_VIEWER_URL` wrong — tiles are served by the Next.js app on :3000 |
-| Digital Twin stays on "Loading…" | web app not reachable on :3000 from the phone; open `http://<LAN IP>:3000` in the phone browser to check |
+| Digital Twin stays on "Loading…" | web app not reachable on :3000 from the phone; open `http://<LAN IP>:3000` in the phone browser to check. If the page itself opens but stays on "Loading Digital Twin viewer…", Next's dev server is refusing its client chunks for that host (`allowedDevOrigins`): `frontend/next.config.ts` now allows every IP of the machine automatically; add other hostnames via `AGROTWIN_DEV_ORIGINS=host1,host2` |
 | Digital Twin closes with a memory message | Android killed the WebView's renderer (large splats); retry with fewer layers |
 | Thumbnails never load | thumbnails come from :8000 (`/api/surveys/{id}/images/{img}/thumbnail`) — same fix as the first row |
 | Expo Go can't connect to Metro | laptop firewall blocking 8081, or use `npm run tunnel` |
+| Expo Go "loading" for minutes, then "something went wrong", no "Android Bundling" line in Metro | phone can't reach the address in the QR code (off Wi-Fi) → `.env.local` with `REACT_NATIVE_PACKAGER_HOSTNAME`, or enter the `exp://` URL manually (section 5) |
+| `Web Bundling failed … react-native-web` in Metro | only the browser target; the phone is unaffected. `react-native-web` is now a dependency, so this should not recur |
 
 ## 8. What runs where
 

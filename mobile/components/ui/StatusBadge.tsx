@@ -1,45 +1,37 @@
 import { StyleSheet, View } from "react-native";
-import { TIER_EMOJI, TIER_LABEL } from "@/constants/labels";
-import { radius, spacing, status, type StatusTier } from "@/constants/theme";
+import { TIER_LABEL } from "@/constants/labels";
+import type { StatusTier } from "@/constants/theme";
+import { useTheme } from "@/hooks/useTheme";
 import { AppText } from "./Text";
 
 interface StatusBadgeProps {
   tier: StatusTier;
-  /** Overrides the default tier label (e.g. "Mostly Healthy", "Completed"). */
+  /** Overrides the default tier label (e.g. "Medium priority", "Completed"). */
   label?: string;
-  size?: "sm" | "md";
-  /** Show the coloured emoji marker in front of the text (default true). */
-  showMarker?: boolean;
+  /** Uppercase variant used in the twin chrome. */
+  upper?: boolean;
 }
 
-/** Pill that pairs a colour with an emoji marker and text — never colour alone. */
-export function StatusBadge({ tier, label, size = "md", showMarker = true }: StatusBadgeProps) {
-  const color = status[tier];
+/**
+ * Outlined tag: 11 px text, 4×9 padding, border and text in the tier colour
+ * (canvas: `border:1px solid {{ color }};color:{{ color }}`). The text
+ * always carries the meaning, so colour is never the only signal.
+ */
+export function StatusBadge({ tier, label, upper = false }: StatusBadgeProps) {
+  const { colors } = useTheme();
+  const color = colors[tier];
   const text = label ?? TIER_LABEL[tier];
   return (
-    <View
-      style={[styles.badge, size === "sm" && styles.sm, { backgroundColor: `${color}22`, borderColor: `${color}66` }]}
-      accessibilityRole="text"
-      accessibilityLabel={`Status: ${text}`}
-    >
-      {showMarker && <AppText variant={size === "sm" ? "caption" : "body"}>{TIER_EMOJI[tier]}</AppText>}
-      <AppText variant={size === "sm" ? "caption" : "bodyStrong"} style={{ color, fontWeight: "600" }}>
+    <View style={[styles.tag, { borderColor: color }]} accessibilityRole="text" accessibilityLabel={`Status: ${text}`}>
+      <AppText variant={upper ? "tagUpper" : "tag"} style={{ color }} numberOfLines={1}>
         {text}
       </AppText>
     </View>
   );
 }
 
+export const Tag = StatusBadge;
+
 const styles = StyleSheet.create({
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    alignSelf: "flex-start",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs + 2,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-  },
-  sm: { paddingHorizontal: spacing.sm, paddingVertical: 2 },
+  tag: { alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 4, borderWidth: 1, borderRadius: 0 },
 });

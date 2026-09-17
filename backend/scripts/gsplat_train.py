@@ -343,13 +343,38 @@ def train(proj: Path, steps: int, sh_degree: int, cap_max: int, device: str, sav
     else:
         # classic 3DGS: grow where image gradients say detail is missing, prune
         # what is transparent, no random motion. absgrad densifies more reliably.
-        strategy = DefaultStrategy(absgrad=True, refine_stop_iter=min(15000, int(steps * 0.5)), verbose=True)
+        # grow_grad2d 0.0008 is gsplat's documented value for absgrad; at the
+        # non-absgrad default (0.0002) the run over-densified 4x and the cap
+        # culled 17M "faintest" (= newest, finest) splats over 30k steps,
+        # leaving only the big blurry ones. The pause keeps both the strategy
+        # and the cap from judging opacity right after a reset zeroes it.
+        # grow_scale3d decides split (shrink) vs duplicate (same size) as a
+        # fraction of scene_scale — and this scene normalises 79 m to 1.0, so the
+        # default 0.01 meant "anything under 0.87 m is small": every splat was
+        # duplicated at its ~18 cm init size and none ever split, which is ~25 px
+        # of blur at 2400 px no matter how long it trained. 0.0005 => ~4 cm.
+        # Plain reference defaults for the gradient test (absgrad=False, 0.0002):
+        # they are tuned for ~1000-1600 px training images. At 2400 px absgrad +
+        # 0.0008 still requested +1.4M splats per refine and the cap churned 60%
+        # of the model every 100 steps. Train at <=1600 px (build_splats
+        # --train-image-size); 3M splats over 2.5 ha is ~10 cm, so 2400 px buys
+        # nothing anyway.
+        # The grow test is grad2d/count over the refine window. Each frame here
+        # covers ~0.9% of the field, so in the default 100-step window a splat is
+        # seen ~0.65 times: the "average" is one noisy sample and ~1M splats
+        # cleared the threshold every refine, then got culled by the cap (black
+        # holes in the render). 500 steps gives ~3 observations per splat.
+        split_above_m = 0.04
+        strategy = DefaultStrategy(refine_every=500, pause_refine_after_reset=500,
+                                   grow_scale3d=split_above_m / norm["scale"] / 1.1,
+                                   refine_stop_iter=min(15000, int(steps * 0.5)), verbose=True)
         state = strategy.initialize_state(scene_scale=1.1)
     strategy.check_sanity(splats, optimizers)
 
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizers["means"], gamma=gamma)
 
     prefetch = FramePrefetcher(frames)
+    check_frame = frames[len(frames) // 2]  # same view every checkpoint, so renders are comparable
     max_log_scale = math.log(max_scale_m / norm["scale"])  # metres -> normalised log-scale
     ground = GroundBand(points, norm, device, below_m=ground_below_m, above_m=ground_above_m) if ground_above_m > 0 else None
     if ground is not None:
@@ -376,7 +401,7 @@ def train(proj: Path, steps: int, sh_degree: int, cap_max: int, device: str, sav
             height=h,
             sh_degree=sh_now,
             packed=True,  # the unpacked path peaked at 23.5 GB on a 16 GB card and spilled to system RAM
-            absgrad=strategy_name != "mcmc",
+            absgrad=False,
             rasterize_mode="antialiased",
         )
         strategy.step_pre_backward(params=splats, optimizers=optimizers, state=state, step=step, info=info)
@@ -413,7 +438,7 @@ def train(proj: Path, steps: int, sh_degree: int, cap_max: int, device: str, sav
             n = splats["means"].shape[0]
             # right after an opacity reset every splat is equally faint, so
             # "faintest" would be a random cull; wait for the next refine
-            if n > cap_max and step % strategy.reset_every != 0:
+            if n > cap_max and step % strategy.reset_every >= strategy.pause_refine_after_reset:
                 # DefaultStrategy has no cap; drop the faintest to stay inside VRAM
                 with torch.no_grad():
                     thresh = torch.kthvalue(splats["opacities"], n - cap_max).values
@@ -433,11 +458,38 @@ def train(proj: Path, steps: int, sh_degree: int, cap_max: int, device: str, sav
             save_checkpoint(ckpt_path, step, splats, optimizers, scheduler, lrs)
             write_ply(export_splats, denormalise(splats, norm), exports / "splat.ply")
             report_geometry(splats, norm)
+            render_check(rasterization, splats, check_frame, device, sh_degree, exports / f"check_step{step:05d}.png")
 
     save_checkpoint(ckpt_path, steps, splats, optimizers, scheduler, lrs)
     write_ply(export_splats, denormalise(splats, norm), exports / "splat.ply")
     report_geometry(splats, norm)
+    render_check(rasterization, splats, check_frame, device, sh_degree, exports / f"check_step{steps:05d}.png")
     log(f"done in {(time.time() - t0) / 60:.1f} min -> {exports / 'splat.ply'}")
+
+
+@torch.no_grad()
+def render_check(rasterization, splats, frame, device, sh_degree, out_png: Path):
+    """One fixed training view, photo | render, saved at each checkpoint: the
+    sharpness trend over a run is what the loss number does not show (two
+    runs reached L1 ~0.11 and one of them was a blur)."""
+    from torchvision.io import decode_jpeg, encode_png, read_file
+
+    gt = decode_jpeg(read_file(str(frame["path"])), device=device)  # [3,H,W] uint8
+    h, w = gt.shape[1:]
+    render, _, _ = rasterization(
+        means=splats["means"], quats=splats["quats"], scales=torch.exp(splats["scales"]),
+        opacities=torch.sigmoid(splats["opacities"]), colors=torch.cat([splats["sh0"], splats["shN"]], dim=1),
+        viewmats=torch.from_numpy(frame["viewmat"]).to(device)[None], Ks=torch.from_numpy(frame["K"]).to(device)[None],
+        width=w, height=h, sh_degree=sh_degree, packed=True, rasterize_mode="antialiased",
+    )
+    pred = render[0].clamp(0, 1).permute(2, 0, 1)
+    l1 = (pred - gt.float() / 255).abs().mean().item()
+    # centre crop at full resolution so blur is visible; side by side
+    c = 400
+    cy, cx = h // 2, w // 2
+    crop = torch.cat([gt[:, cy - c:cy + c, cx - c:cx + c], (pred * 255).byte()[:, cy - c:cy + c, cx - c:cx + c]], dim=2)
+    out_png.write_bytes(encode_png(crop.cpu()).numpy().tobytes())
+    log(f"check: {frame['path'].name} L1 {l1:.3f} -> {out_png.name}")
 
 
 def report_geometry(splats, norm):

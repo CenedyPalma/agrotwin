@@ -1,10 +1,7 @@
 import { StyleSheet, View } from "react-native";
-import { Calendar, Camera, ChevronRight, Plane } from "lucide-react-native";
-import { spacing } from "@/constants/theme";
-import { useTheme } from "@/hooks/useTheme";
 import type { Survey } from "@/types";
 import { formatDate, formatNumber } from "@/utils/format";
-import { Card, AppText } from "@/components/ui";
+import { Blueprint, ProgressTrack, AppText } from "@/components/ui";
 import { SurveyStatus } from "./SurveyStatus";
 
 interface SurveyCardProps {
@@ -13,50 +10,41 @@ interface SurveyCardProps {
   onPress: () => void;
 }
 
+/** Canvas survey card: title, "field · date", outlined status tag, "drone · N images", a pulse bar while processing. */
 export function SurveyCard({ survey, fieldName, onPress }: SurveyCardProps) {
-  const { colors } = useTheme();
+  const running = !["COMPLETED", "FAILED", "PENDING"].includes(survey.status);
   return (
-    <Card onPress={onPress} accessibilityLabel={`${survey.name}, ${fieldName ?? "field"}, ${survey.status}. Open survey`}>
-      <View style={styles.header}>
+    <Blueprint onPress={onPress} accessibilityLabel={`${survey.name}, ${fieldName ?? "field"}, ${survey.status}. Open survey`}>
+      <View style={styles.head}>
         <View style={styles.titles}>
-          <AppText variant="heading" numberOfLines={2}>
+          <AppText variant="cardTitle" numberOfLines={2}>
             {survey.name}
           </AppText>
-          {fieldName ? (
-            <AppText variant="caption" tone="muted">
-              {fieldName}
-            </AppText>
-          ) : null}
+          <AppText variant="caption" tone="muted" numberOfLines={1}>
+            {fieldName ?? "Field"} · {formatDate(survey.survey_date ?? survey.created_at)}
+          </AppText>
         </View>
-        <ChevronRight size={20} color={colors.textMuted} />
+        <SurveyStatus status={survey.status} />
       </View>
       <View style={styles.meta}>
-        <Meta icon={<Calendar size={14} color={colors.textMuted} />} text={formatDate(survey.survey_date ?? survey.created_at)} />
-        <Meta icon={<Plane size={14} color={colors.textMuted} />} text={survey.drone_model ?? "Unknown drone"} />
-        <Meta icon={<Camera size={14} color={colors.textMuted} />} text={`${formatNumber(survey.frame_count || survey.image_count)} images`} />
+        <AppText variant="caption" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
+          {survey.drone_model ?? "Unknown drone"}
+        </AppText>
+        <AppText variant="caption" tone="muted">
+          {formatNumber(survey.frame_count || survey.image_count)} images
+        </AppText>
       </View>
-      <View style={styles.footer}>
-        <SurveyStatus status={survey.status} size="sm" />
-      </View>
-    </Card>
-  );
-}
-
-function Meta({ icon, text }: { icon: React.ReactNode; text: string }) {
-  return (
-    <View style={styles.metaItem}>
-      {icon}
-      <AppText variant="caption" tone="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
-        {text}
-      </AppText>
-    </View>
+      {running ? (
+        <View style={{ marginTop: 12 }}>
+          <ProgressTrack fraction={null} height={6} accessibilityLabel="Processing" />
+        </View>
+      ) : null}
+    </Blueprint>
   );
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
-  titles: { flex: 1, gap: 2 },
-  meta: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md, marginTop: spacing.md },
-  metaItem: { flexDirection: "row", alignItems: "center", gap: spacing.xs, maxWidth: "100%" },
-  footer: { marginTop: spacing.md },
+  head: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  titles: { flex: 1, minWidth: 0 },
+  meta: { flexDirection: "row", gap: 16, marginTop: 12 },
 });

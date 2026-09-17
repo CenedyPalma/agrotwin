@@ -6,46 +6,44 @@ import type { StatusTier } from "./theme";
 
 // Mirrors _classify_zone_type in backend/app/services/analysis_service.py.
 export const DETECTION_TYPE_LABEL: Record<string, string> = {
-  bare_soil: "Bare Soil",
-  low_crop_density: "Low Crop Density",
-  patchy_vegetation: "Patchy Vegetation",
+  bare_soil: "Bare patch",
+  low_crop_density: "Low crop density",
+  patchy_vegetation: "Patchy vegetation",
 };
 
+/** Plain-language explanation shown under a zone title (design: `z.plain`). */
 export const DETECTION_TYPE_DESCRIPTION: Record<string, string> = {
-  bare_soil: "Little or no vegetation was measured here compared with the rest of the field.",
-  low_crop_density: "Vegetation cover is well below what the best parts of this field reach.",
-  patchy_vegetation: "Vegetation cover is uneven here — some spots are thinner than their surroundings.",
+  bare_soil: "Almost no crop was measured here compared with the rest of the field.",
+  low_crop_density: "Plants here are thinner than in the rest of the field, so the ground shows through.",
+  patchy_vegetation: "The crop here is uneven — some spots are thinner than their surroundings.",
 };
 
 export function detectionTypeLabel(type: string): string {
-  return DETECTION_TYPE_LABEL[type] ?? type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return DETECTION_TYPE_LABEL[type] ?? type.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
 export const SEVERITY_LABEL: Record<string, string> = { low: "Low", medium: "Medium", high: "High" };
 
 export function priorityLabel(severity: string): string {
-  return `${SEVERITY_LABEL[severity] ?? severity} Priority`;
+  return `${SEVERITY_LABEL[severity] ?? severity} priority`;
 }
 
-/** Same mapping the web app's DetectionPanel uses: low → needs attention, otherwise problem. */
+/**
+ * Colour for a zone's priority (design: high → bad, medium → warn, low →
+ * accent). Distinct from the field-health tiers.
+ */
 export function severityTier(severity: string): StatusTier {
-  return severity === "low" ? "attention" : "problem";
+  if (severity === "high") return "problem";
+  if (severity === "medium") return "attention";
+  return "info";
 }
 
 export const TIER_LABEL: Record<StatusTier, string> = {
   healthy: "Healthy",
-  attention: "Needs Attention",
+  attention: "Needs attention",
   problem: "Problem",
   info: "Info",
   neutral: "Unknown",
-};
-
-export const TIER_EMOJI: Record<StatusTier, string> = {
-  healthy: "🟢",
-  attention: "🟡",
-  problem: "🔴",
-  info: "🔵",
-  neutral: "⚪",
 };
 
 // Mirrors METHOD_LABEL / METHOD_DESCRIPTION in frontend/lib/frames.ts.
@@ -87,6 +85,7 @@ export function surveyStatusLabel(status: string): string {
   return SURVEY_STATUS_LABEL[status] ?? status.charAt(0) + status.slice(1).toLowerCase();
 }
 
+/** Design: completed → ok, failed → bad, anything in flight → accent. */
 export function surveyStatusTier(status: string): StatusTier {
   if (status === "COMPLETED") return "healthy";
   if (status === "FAILED") return "problem";
@@ -104,48 +103,46 @@ export const BAND_LABEL: Record<string, string> = {
 };
 
 export const ASSET_TYPE_LABEL: Record<string, string> = {
-  orthomosaic: "Field Photo Map",
-  ndvi: "Crop Health Map (NDVI)",
-  ndre: "NDRE Map",
-  gndvi: "GNDVI Map",
-  thermal: "Thermal Map",
+  orthomosaic: "Stitched field map",
+  ndvi: "Vegetation index (NDVI)",
+  ndre: "Leaf nitrogen index (NDRE)",
+  gndvi: "GNDVI map",
+  thermal: "Thermal map",
   dsm: "Elevation (DSM)",
-  model3d: "3D Model",
-  tileset: "3D Tiles",
-  pointcloud: "Point Cloud",
-  pointcloud_laz: "Point Cloud (LAZ)",
-  geojson: "Imported Boundaries",
-  boundary: "Field Boundary",
+  model3d: "3D model",
+  tileset: "3D tiles",
+  pointcloud: "Point cloud",
+  pointcloud_laz: "Point cloud (LAZ)",
+  geojson: "Imported boundaries",
+  boundary: "Field boundary",
 };
 
 export function assetTypeLabel(type: string): string {
   return ASSET_TYPE_LABEL[type] ?? type;
 }
 
-/** Suggested questions shown in the AI chat. Answered from measured data only. */
+/** Suggested questions shown in the AI chat (design). Answered from measured data only. */
 export const SUGGESTED_QUESTIONS = [
   "How is my field doing?",
   "Where should I inspect today?",
-  "Show me the problem areas.",
-  "What changed since the last survey?",
-  "Are there areas with low vegetation?",
-  "How was this analysis measured?",
+  "Show problem areas",
+  "What changed since my last survey?",
 ] as const;
 
-/** Human-friendly copy for the most common failure modes. */
+/** Human-friendly copy for the most common failure modes (design: error state). */
 export const ERROR_COPY = {
   offline: {
-    title: "Cannot connect to AgroTwin",
+    title: "Unable to reach AgroTwin",
     message:
-      "Check that the AgroTwin server is running on your computer and that this phone is on the same Wi-Fi network. You can change the server address in Settings.",
+      "We couldn't reach AgroTwin. Check that the server is running on your computer and that this phone is on the same Wi-Fi network — you can change the server address in Settings.",
   },
   timeout: {
-    title: "The server is taking too long",
-    message: "AgroTwin did not answer in time. It may be busy processing a survey — try again in a moment.",
+    title: "AgroTwin is taking too long",
+    message: "The server did not answer in time. It may be busy processing a survey — try again in a moment.",
   },
   notConfigured: {
     title: "Server address not set",
-    message: "Open Settings and enter the address of your AgroTwin server (for example http://192.168.1.50:8000).",
+    message: "Open Settings and enter the address of your AgroTwin computer (for example http://192.168.1.50:8000).",
   },
   notFound: {
     title: "Not found",

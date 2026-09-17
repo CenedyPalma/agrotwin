@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as Location from "expo-location";
 import { ArrowLeft } from "lucide-react-native";
-import { spacing, radius } from "@/constants/theme";
+import { layout } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { useField } from "@/features/fields/hooks";
 import { useFieldBoundary, useSurvey, useSurveyAssets, useSurveyImages } from "@/features/surveys/hooks";
@@ -13,8 +12,14 @@ import { enrichZones } from "@/features/analysis/zones";
 import { useMapLayerStore } from "@/stores/mapLayerStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { DetectionZone } from "@/types";
-import { ErrorState, IconButton, LoadingState, Screen, AppText } from "@/components/ui";
-import { LayerControl, MapControls, MapViewer, ZoneDetails, type MapViewerHandle } from "@/components/map";
+import { ErrorState, IconButton, LoadingState, Screen, Swatch, AppText } from "@/components/ui";
+import { LayerSheet, MapControls, MapViewer, ZoneMarkers, ZoneSheet, selectRasterSources, type MapViewerHandle } from "@/components/map";
+
+const LEGEND = [
+  { tier: "healthy", label: "Healthy" },
+  { tier: "attention", label: "Needs attention" },
+  { tier: "problem", label: "Problem" },
+] as const;
 
 export default function FieldMapScreen() {
   const { surveyId, zone: zoneParam, image: imageParam } = useLocalSearchParams<{ surveyId: string; zone?: string; image?: string }>();
@@ -22,16 +27,12 @@ export default function FieldMapScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const setActiveSurvey = useUiStore((s) => s.setActiveSurvey);
-  const baseLayer = useMapLayerStore((s) => s.baseLayer);
-  const setBaseLayer = useMapLayerStore((s) => s.setBaseLayer);
+  const layers = useMapLayerStore((s) => s.layers);
 
   const mapRef = useRef<MapViewerHandle>(null);
   const [layersOpen, setLayersOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(zoneParam ?? null);
   const [mapReady, setMapReady] = useState(false);
-  const [userLocation, setUserLocation] = useState(false);
-  const [locating, setLocating] = useState(false);
-  const [locationNote, setLocationNote] = useState<string | null>(null);
 
   const survey = useSurvey(surveyId);
   const field = useField(survey.data?.field_id);
@@ -54,62 +55,25 @@ export default function FieldMapScreen() {
     [zones, boundary.data]
   );
   const selected = zoneViews.find((v) => v.zone.id === selectedId) ?? null;
+  const rasters = useMemo(() => selectRasterSources(assets.data), [assets.data]);
 
-  // Focus the zone requested by the route once the map exists.
   useEffect(() => {
     if (mapReady && selected?.bbox) mapRef.current?.focusOn(selected.bbox);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, selectedId]);
 
-  // Focus a photo position requested by the gallery.
   useEffect(() => {
     if (!mapReady || !imageParam) return;
     const img = images.data?.find((i) => i.id === imageParam);
     if (img?.lat != null && img.lon != null) mapRef.current?.focusOn({ latitude: img.lat, longitude: img.lon });
   }, [mapReady, imageParam, images.data]);
 
-  const onSelectZone = useCallback((z: DetectionZone | null) => {
-    setSelectedId(z?.id ?? null);
-    if (z) setLayersOpen(false);
-  }, []);
-
-  const locate = useCallback(async () => {
-    setLocating(true);
-    setLocationNote(null);
-    try {
-      const perm = await Location.requestForegroundPermissionsAsync();
-      if (!perm.granted) {
-        setLocationNote("Location permission was not granted.");
-        return;
-      }
-      setUserLocation(true);
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      mapRef.current?.focusOn({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
-    } catch {
-      setLocationNote("Could not read your position. Is GPS on?");
-    } finally {
-      setLocating(false);
-    }
-  }, []);
+  const onSelectZone = useCallback((z: DetectionZone | null) => setSelectedId(z?.id ?? null), []);
 
   const loading = survey.isPending || boundary.isPending || analysis.isPending || assets.isPending;
   const fatal = survey.isError ? survey.error : boundary.isError ? boundary.error : null;
-
-  const header = (
-    <View style={[styles.topBar, { top: insets.top + spacing.sm }]} pointerEvents="box-none">
-      <IconButton overlay icon={<ArrowLeft size={20} color="#fff" />} accessibilityLabel="Go back" onPress={() => router.back()} />
-      <View style={styles.titlePill}>
-        <AppText variant="bodyStrong" style={styles.titleText} numberOfLines={1}>
-          {field.data?.name ?? "Field map"}
-        </AppText>
-        {survey.data ? (
-          <AppText variant="caption" style={styles.subtitleText} numberOfLines={1}>
-            {survey.data.name}
-          </AppText>
-        ) : null}
-      </View>
-    </View>
-  );
+  const onCount = Object.values(layers).filter(Boolean).length;
+  const bottomEdge = insets.bottom + 26;
 
   if (loading) {
     return (
@@ -121,7 +85,7 @@ export default function FieldMapScreen() {
   if (fatal) {
     return (
       <Screen scroll={false} safeTop>
-        <ErrorState error={fatal} onRetry={() => (survey.isError ? survey.refetch() : boundary.refetch())} />
+        <ErrorState error={fatal} title="Unable to load map" onRetry={() => (survey.isError ? survey.refetch() : boundary.refetch())} />
       </Screen>
     );
   }
@@ -131,7 +95,7 @@ export default function FieldMapScreen() {
   const noGeometry = !hasBoundary && zones.length === 0 && imageList.every((i) => i.lat == null) && !(assets.data ?? []).some((a) => a.bounds_geojson);
 
   return (
-    <View style={[styles.root, { backgroundColor: colors.background }]}>
+    <View style={[styles.root, { backgroundColor: colors.bg }]}>
       {noGeometry ? (
         <Screen scroll={false} safeTop>
           <ErrorState
@@ -142,8 +106,8 @@ export default function FieldMapScreen() {
               images.refetch();
             }}
           />
-          <AppText variant="body" tone="muted" style={{ textAlign: "center", paddingHorizontal: spacing.xl }}>
-            This survey has no field boundary, GPS photo positions or georeferenced map yet. Run processing from the survey page.
+          <AppText variant="body" tone="muted" style={{ textAlign: "center", paddingHorizontal: 24 }}>
+            This survey has no field boundary, GPS photo positions or stitched map yet. Run processing from the survey page.
           </AppText>
         </Screen>
       ) : (
@@ -156,68 +120,73 @@ export default function FieldMapScreen() {
           selectedZoneId={selectedId}
           onSelectZone={onSelectZone}
           highlightImageId={imageParam ?? null}
-          showsUserLocation={userLocation}
           onMapReady={() => setMapReady(true)}
-          edgePadding={{ top: insets.top + 90, right: 70, bottom: insets.bottom + 120, left: 30 }}
-        />
+          edgePadding={{ top: insets.top + 90, right: 80, bottom: bottomEdge + 120, left: 30 }}
+        >
+          <ZoneMarkers zones={zoneViews} visible={layers.zones} onPress={(v) => setSelectedId(v.zone.id)} />
+        </MapViewer>
       )}
 
-      {header}
+      {/* top bar */}
+      <View style={[styles.topBar, { top: insets.top + 10 }]} pointerEvents="box-none">
+        <IconButton tone="raised" size={46} icon={<ArrowLeft size={20} color={colors.text} strokeWidth={1.6} />} accessibilityLabel="Back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)"))} />
+        <View style={[styles.titlePill, { backgroundColor: colors.bg, borderColor: colors.divider }, colors.shadowMd]}>
+          <AppText variant="heading" style={{ fontSize: 18, lineHeight: 20 }} numberOfLines={1}>
+            {field.data?.name ?? survey.data?.name ?? "Field map"}
+          </AppText>
+          <AppText variant="label" tone="muted" numberOfLines={1}>
+            {onCount} layers on · tap a marker for details
+          </AppText>
+        </View>
+      </View>
+
       <MapControls
-        top={insets.top + 70}
-        onFitField={() => mapRef.current?.fitToField()}
-        onToggleLayers={() => setLayersOpen((v) => !v)}
+        bottom={bottomEdge}
         layersOpen={layersOpen}
-        onToggleBase={() => setBaseLayer(baseLayer === "standard" ? "hybrid" : "standard")}
-        baseIsSatellite={baseLayer !== "standard"}
-        onLocate={locate}
-        locating={locating}
+        onLayers={() => setLayersOpen(true)}
+        onCentre={() => mapRef.current?.fitToField()}
+        onTwin={() => surveyId && router.push({ pathname: "/twin/[surveyId]", params: selectedId ? { surveyId, zone: selectedId } : { surveyId } })}
+        onAi={() => router.push(surveyId ? { pathname: "/ai/chat", params: { surveyId } } : "/ai/chat")}
       />
 
-      <View style={[styles.bottom, { paddingBottom: insets.bottom + spacing.md }]} pointerEvents="box-none">
-        {locationNote ? (
-          <View style={styles.note}>
-            <AppText variant="caption" style={styles.titleText}>
-              {locationNote}
-            </AppText>
+      {/* legend */}
+      <View style={[styles.legend, { bottom: bottomEdge, backgroundColor: colors.bg, borderColor: colors.divider }, colors.shadowMd]} accessibilityLabel="Legend">
+        <AppText variant="kickerSm" tone="muted" style={{ marginBottom: 6 }}>
+          Legend
+        </AppText>
+        {LEGEND.map((l) => (
+          <View key={l.tier} style={styles.legendRow}>
+            <Swatch color={colors[l.tier]} size={10} />
+            <AppText variant="small">{l.label}</AppText>
           </View>
-        ) : null}
+        ))}
         {analysis.isError ? (
-          <View style={styles.note}>
-            <AppText variant="caption" style={styles.titleText}>
-              Attention zones could not be loaded.
-            </AppText>
-          </View>
-        ) : null}
-        {layersOpen ? (
-          <LayerControl
-            rasters={{}}
-            hasZones={zones.length > 0}
-            hasImages={imageList.some((i) => i.lat != null)}
-            hasBoundary={hasBoundary}
-          />
-        ) : null}
-        {selected ? (
-          <ZoneDetails
-            zone={selected.zone}
-            areaM2={selected.areaM2}
-            locationLabel={selected.locationLabel}
-            onClose={() => setSelectedId(null)}
-            onViewDetails={() => surveyId && router.push({ pathname: "/analysis/[surveyId]", params: { surveyId } })}
-            onOpenTwin={() => surveyId && router.push({ pathname: "/twin/[surveyId]", params: { surveyId, zone: selected.zone.id } })}
-          />
+          <AppText variant="small" tone="problem" style={{ marginTop: 4 }}>
+            Zones unavailable
+          </AppText>
         ) : null}
       </View>
+
+      <LayerSheet visible={layersOpen} onClose={() => setLayersOpen(false)} rasters={rasters} hasZones={zones.length > 0} hasImages={imageList.some((i) => i.lat != null)} hasBoundary={hasBoundary} />
+      <ZoneSheet
+        zone={selected?.zone ?? null}
+        areaM2={selected?.areaM2 ?? null}
+        fieldHectares={boundary.data?.area_hectares ?? field.data?.area_hectares ?? null}
+        locationLabel={selected?.locationLabel ?? null}
+        onClose={() => setSelectedId(null)}
+        onViewDetails={() => surveyId && router.push({ pathname: "/analysis/[surveyId]", params: { surveyId } })}
+        onOpenTwin={() => surveyId && selected && router.push({ pathname: "/twin/[surveyId]", params: { surveyId, zone: selected.zone.id } })}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  topBar: { position: "absolute", left: spacing.md, right: 76, flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  titlePill: { flex: 1, backgroundColor: "rgba(11, 15, 12, 0.72)", borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.xs + 2 },
-  titleText: { color: "#fff" },
-  subtitleText: { color: "rgba(255,255,255,0.75)" },
-  bottom: { position: "absolute", left: spacing.md, right: spacing.md, bottom: 0, gap: spacing.sm },
-  note: { backgroundColor: "rgba(11, 15, 12, 0.8)", borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, alignSelf: "center" },
+  topBar: { position: "absolute", left: 14, right: 14, flexDirection: "row", alignItems: "center", gap: 10 },
+  titlePill: { flex: 1, minWidth: 0, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8 },
+  legend: { position: "absolute", left: 14, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, maxWidth: 200 },
+  legendRow: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 3 },
 });
+
+void layout;

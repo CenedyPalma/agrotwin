@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet } from "react-native";
-import { radius, spacing } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { AppText } from "./Text";
 
@@ -10,14 +9,11 @@ interface ChipProps {
   onPress?: () => void;
   icon?: ReactNode;
   disabled?: boolean;
-  /** Stroke colour when selected (defaults to brand). */
-  color?: string;
 }
 
-/** Selectable filter / toggle chip with a 40 px touch height. */
-export function Chip({ label, selected = false, onPress, icon, disabled = false, color }: ChipProps) {
+/** Square hairline chip (design: AI suggestion buttons, 44 px tall). Selected = accent fill. */
+export function Chip({ label, selected = false, onPress, icon, disabled = false }: ChipProps) {
   const { colors } = useTheme();
-  const accent = color ?? colors.brand;
   return (
     <Pressable
       onPress={onPress}
@@ -27,16 +23,12 @@ export function Chip({ label, selected = false, onPress, icon, disabled = false,
       accessibilityLabel={label}
       style={({ pressed }) => [
         styles.chip,
-        {
-          backgroundColor: selected ? `${accent}22` : colors.surface,
-          borderColor: selected ? accent : colors.border,
-        },
-        pressed && { opacity: 0.7 },
+        { backgroundColor: selected ? colors.accent : pressed ? colors.pressed : "transparent", borderColor: selected ? colors.accent : colors.divider },
         disabled && { opacity: 0.45 },
       ]}
     >
       {icon}
-      <AppText variant="caption" style={{ color: selected ? accent : colors.text, fontWeight: "600" }}>
+      <AppText variant="bodySm" style={{ color: selected ? colors.onAccent : colors.text }} numberOfLines={1}>
         {label}
       </AppText>
     </Pressable>
@@ -44,13 +36,5 @@ export function Chip({ label, selected = false, onPress, icon, disabled = false,
 }
 
 const styles = StyleSheet.create({
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    minHeight: 40,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-  },
+  chip: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 14, borderWidth: 1, borderRadius: 0 },
 });

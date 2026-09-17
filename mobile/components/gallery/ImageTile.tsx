@@ -1,67 +1,53 @@
 import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
-import { radius, spacing } from "@/constants/theme";
-import { BAND_LABEL } from "@/constants/labels";
 import { useTheme } from "@/hooks/useTheme";
 import type { SurveyImage } from "@/types";
+import { formatCoordinate, formatMeters } from "@/utils/format";
 import { AppText } from "@/components/ui";
 
 interface ImageTileProps {
   image: SurveyImage;
   index: number;
-  size: number;
   thumbnailUrl: string;
   onPress: () => void;
+  /** `grid`: 4:3 thumbnail with the name and meta below; `list`: 72×54 thumbnail beside the text. */
+  layout: "grid" | "list";
+  width: number;
 }
 
-/** One thumbnail in the gallery grid. Memoised: the grid can hold a thousand of these. */
-export const ImageTile = memo(function ImageTile({ image, index, size, thumbnailUrl, onPress }: ImageTileProps) {
+/** Canvas gallery tile: hairline frame, square corners, filename + "lat · lon · altitude" meta. Memoised for long lists. */
+export const ImageTile = memo(function ImageTile({ image, index, thumbnailUrl, onPress, layout, width }: ImageTileProps) {
   const { colors } = useTheme();
+  const meta = image.lat != null && image.lon != null ? `${formatCoordinate(image.lat, image.lon)} · ${formatMeters(image.rel_altitude_m ?? image.altitude_m, 0)}` : "No GPS";
+  const grid = layout === "grid";
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="imagebutton"
-      accessibilityLabel={`Image ${index + 1}, ${image.filename}${image.lat != null ? ", has GPS" : ""}`}
-      style={({ pressed }) => [styles.tile, { width: size, height: size, backgroundColor: colors.surface2 }, pressed && { opacity: 0.8 }]}
+      accessibilityLabel={`Image ${index + 1}, ${image.filename}, ${meta}`}
+      style={({ pressed }) => [styles.tile, grid ? { width } : styles.listTile, { borderColor: colors.divider }, pressed && { backgroundColor: colors.pressed }]}
     >
-      <Image
-        source={{ uri: thumbnailUrl }}
-        style={styles.image}
-        contentFit="cover"
-        cachePolicy="memory-disk"
-        recyclingKey={image.id}
-        transition={120}
-        accessibilityIgnoresInvertColors
-      />
-      <View style={styles.badge}>
-        <AppText variant="caption" style={styles.badgeText}>
-          {index + 1}
+      <View style={[grid ? styles.thumbGrid : styles.thumbList, { backgroundColor: colors.skeleton }]}>
+        <Image source={{ uri: thumbnailUrl }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" recyclingKey={image.id} transition={120} accessibilityIgnoresInvertColors />
+      </View>
+      <View style={grid ? styles.metaGrid : styles.metaList}>
+        <AppText variant="smallStrong" numberOfLines={1}>
+          {image.filename}
+        </AppText>
+        <AppText variant="label" tone="muted" numberOfLines={1}>
+          {meta}
         </AppText>
       </View>
-      {image.band !== "RGB" ? (
-        <View style={[styles.badge, styles.bandBadge]}>
-          <AppText variant="caption" style={styles.badgeText}>
-            {BAND_LABEL[image.band] ?? image.band}
-          </AppText>
-        </View>
-      ) : null}
     </Pressable>
   );
 });
 
 const styles = StyleSheet.create({
-  tile: { borderRadius: radius.sm, overflow: "hidden" },
-  image: { width: "100%", height: "100%" },
-  badge: {
-    position: "absolute",
-    left: spacing.xs,
-    bottom: spacing.xs,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderRadius: radius.sm,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-  },
-  bandBadge: { left: undefined, right: spacing.xs },
-  badgeText: { color: "#fff", fontSize: 11, lineHeight: 14 },
+  tile: { borderWidth: 1, borderRadius: 0 },
+  listTile: { flexDirection: "row", alignItems: "center", gap: 12, padding: 8, width: "100%" },
+  thumbGrid: { width: "100%", aspectRatio: 4 / 3 },
+  thumbList: { width: 72, height: 54, flexShrink: 0 },
+  metaGrid: { paddingTop: 7, paddingHorizontal: 8, paddingBottom: 9 },
+  metaList: { flex: 1, minWidth: 0 },
 });

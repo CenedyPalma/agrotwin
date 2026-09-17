@@ -1,49 +1,34 @@
-import { Pressable, StyleSheet, View } from "react-native";
-import { ChevronRight } from "lucide-react-native";
-import { spacing, touchTarget } from "@/constants/theme";
-import { useTheme } from "@/hooks/useTheme";
+import { StyleSheet, View } from "react-native";
+import { Button } from "./Button";
 import { AppText } from "./Text";
 
 interface SectionHeaderProps {
   title: string;
-  subtitle?: string;
+  /** Muted caption on the right (design: "4 found"). */
+  meta?: string;
+  /** Ghost button on the right (design: "All 4"). */
   actionLabel?: string;
   onAction?: () => void;
 }
 
-export function SectionHeader({ title, subtitle, actionLabel, onAction }: SectionHeaderProps) {
-  const { colors } = useTheme();
+/** The canvas `h6`: 13 px uppercase, 0.08em tracking, 10 px below. */
+export function SectionHeader({ title, meta, actionLabel, onAction }: SectionHeaderProps) {
   return (
     <View style={styles.row}>
-      <View style={styles.titles}>
-        <AppText variant="label" tone="muted" accessibilityRole="header">
-          {title}
-        </AppText>
-        {subtitle ? (
-          <AppText variant="caption" tone="muted">
-            {subtitle}
-          </AppText>
-        ) : null}
-      </View>
+      <AppText variant="h6" accessibilityRole="header">
+        {title}
+      </AppText>
       {actionLabel && onAction ? (
-        <Pressable
-          onPress={onAction}
-          accessibilityRole="link"
-          accessibilityLabel={actionLabel}
-          style={({ pressed }) => [styles.action, pressed && { opacity: 0.6 }]}
-        >
-          <AppText variant="caption" tone="brand" style={{ fontWeight: "600" }}>
-            {actionLabel}
-          </AppText>
-          <ChevronRight size={16} color={colors.brand} />
-        </Pressable>
+        <Button label={actionLabel} variant="ghost" minHeight={36} onPress={onAction} />
+      ) : meta ? (
+        <AppText variant="small" tone="muted">
+          {meta}
+        </AppText>
       ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.sm },
-  titles: { flex: 1, gap: 2 },
-  action: { flexDirection: "row", alignItems: "center", minHeight: touchTarget - 12, paddingLeft: spacing.md },
+  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 24, marginBottom: 10 },
 });

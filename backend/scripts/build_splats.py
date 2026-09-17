@@ -431,8 +431,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--survey", required=True)
     ap.add_argument("--steps", type=int, default=30000)
-    ap.add_argument("--train-image-size", type=int, default=2400,
-                    help="longest edge of the undistorted training images (VRAM/time knob; 2400 suits a 16 GB card)")
+    ap.add_argument("--train-image-size", type=int, default=1200,
+                    help="longest edge of the undistorted training images (VRAM/time knob; gsplat densification defaults are tuned for ~1000-1600 px)")
     ap.add_argument("--max-image-size", type=int, default=2000, help="SIFT feature extraction size")
     ap.add_argument("--stop-after", choices=["sfm", "align", "undistort", "train"], default=None)
     ap.add_argument("--stride", type=int, default=1, help="use every Nth frame (keeps overlap; thins a dense grid)")

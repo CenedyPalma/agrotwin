@@ -1,7 +1,7 @@
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { StyleSheet, TextInput, View } from "react-native";
-import { radius, spacing } from "@/constants/theme";
+import { typography } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
 import { CROP_OPTIONS, newFieldSchema, type NewFieldForm as Values } from "@/features/upload/schemas";
 import { cropLabel } from "@/utils/format";
@@ -13,6 +13,7 @@ interface NewFieldFormProps {
   error?: string | null;
 }
 
+/** Canvas "New field" form: name field, crop chips, primary submit. */
 export function NewFieldForm({ onSubmit, submitting, error }: NewFieldFormProps) {
   const { colors } = useTheme();
   const form = useForm<Values>({ resolver: zodResolver(newFieldSchema), defaultValues: { name: "", crop_type: "soybean" } });
@@ -32,9 +33,9 @@ export function NewFieldForm({ onSubmit, submitting, error }: NewFieldFormProps)
               onChangeText={field.onChange}
               onBlur={field.onBlur}
               placeholder="e.g. North Soybean Field"
-              placeholderTextColor={colors.textMuted}
+              placeholderTextColor={colors.muted}
               accessibilityLabel="Field name"
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface2, borderColor: fieldState.error ? colors.problem : colors.border }]}
+              style={[styles.input, typography.body, { color: colors.text, borderColor: fieldState.error ? colors.problem : colors.divider }]}
             />
             {fieldState.error ? (
               <AppText variant="caption" tone="problem">
@@ -71,8 +72,8 @@ export function NewFieldForm({ onSubmit, submitting, error }: NewFieldFormProps)
 }
 
 const styles = StyleSheet.create({
-  form: { gap: spacing.md },
-  field: { gap: spacing.xs },
-  input: { height: 48, borderRadius: radius.md, borderWidth: 1, paddingHorizontal: spacing.md, fontSize: 15 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  form: { gap: 12 },
+  field: { gap: 4 },
+  input: { height: 48, borderWidth: 1, paddingHorizontal: 12 },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
 });
