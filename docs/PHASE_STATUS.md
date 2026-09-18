@@ -52,7 +52,7 @@ Roadmap phases per the original spec, and what's actually done.
       emitted as `weed_candidate` zones for scouting ONLY while the canopy is
       open enough for rows to be separable (mid-row cover ≤ 35 %). On the
       40 ft survey: rows 0.40 m apart at bearing 38.5° (row signal 0.83),
-      canopy covers 79 % of the ground between rows on the 48 % of the field
+      canopy covers 84 % of the ground between rows on the 48 % of the field
       where rows could be followed → status `canopy_closed`, no candidates —
       the honest answer for a June flight; an early-season (V2–V4) flight is
       what weed mapping needs. Verified on a synthetic field (0.5 m rows at
@@ -144,7 +144,7 @@ Roadmap phases per the original spec, and what's actually done.
   this crop, which this project doesn't have. Until then the analysis is
   classical CV (vegetation indices + crop-row geometry), labelled as such.
 - Inter-row weed candidates need an open canopy; the only survey on this
-  machine (June, 40 ft) has 79 % canopy closure, so none can be measured.
+  machine (June, 40 ft) has 84 % canopy closure, so none can be measured.
 - Basemap: the default is now open data (USGS/NAIP over the US, Sentinel-2
   elsewhere). The 3D terrain still defaults to Esri World Elevation 3D
   because there is no token-free open global terrain service Cesium can

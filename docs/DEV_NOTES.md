@@ -18,6 +18,22 @@
 - Raw frames of the current survey are referenced in place under
   `E:\40 ft\RGB Only\Part 1..3` (1,378 DJI `_D.JPG`, RGB only, no bands).
 
+## A stale backend can silently keep port 8000
+
+uvicorn binds with `SO_REUSEADDR`; on Windows that lets a second uvicorn bind
+`0.0.0.0:8000` while an older one still listens, and the *old* process keeps
+receiving the requests — the new one starts, logs "running", and serves
+nothing. Symptom: the API answers with old behaviour after a "restart".
+Check `netstat -ano | findstr :8000` — every LISTENING line is a process
+that can answer. The stale one is usually an orphan: uvicorn (and uv's
+`python.exe` trampoline) spawn the real server as a child, so killing the
+PID you started leaves a `python.exe -c "from multiprocessing..."` child
+whose parent is gone and which still holds the socket. Find it with
+`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` (parent PID no
+longer exists) and `taskkill /PID <child> /F`; the netstat owner can even be
+the dead parent's PID. This is how the API served 02:30 code until 03:00 on
+2026-09-18 despite two "restarts".
+
 ## run.ps1 owns both servers
 
 `run.ps1` stops the frontend when the backend exits and vice versa (its

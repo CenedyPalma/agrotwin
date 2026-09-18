@@ -53,6 +53,12 @@ LOCK_MIN_COVERAGE, LOCK_MIN_REGULARITY = 0.8, 0.7
 MIN_LOCK_FRACTION = 0.25  # of the field area, for canopy / inter-row measurements to be reported
 CANOPY_OPEN_MAX_MIDROW_COVER = 0.35  # inter-row candidates need separable rows
 INTER_ROW_TROUGH_FRACTION = 0.35  # a column is "between rows" while its profile is this close to the trough
+# Columns dropped at each end of a trough interval: the columns touching the crop
+# lines carry leaf edges and resampling jitter. On a synthetic 0.5 m-row field
+# with one 28 m² patch, trim 0 leaks 12 % of the vegetation into the gaps while
+# trim 1 recovers the patch as one 27 m² candidate with 0.2 % leakage.
+INTER_ROW_TRIM_PX = 1
+SPECK_MIN_M2 = 0.05  # inter-row blobs smaller than this are leaf tips / edge jitter, not a patch
 MIN_PATCH_M2 = 0.25
 METHOD = "row_interrow_exg"
 
@@ -255,8 +261,8 @@ def analyze_rows(path: Path, boundary_geojson: str | None = None) -> RowAnalysis
             if peak - trough <= 1e-6:
                 continue
             low = np.nonzero(seg < trough + INTER_ROW_TROUGH_FRACTION * (peak - trough))[0]
-            if len(low) >= 3:  # keep the interior of the trough, not the columns touching the crop lines
-                inter_cols[a + low[0] + 1:a + low[-1]] = True
+            if len(low) > 2 * INTER_ROW_TRIM_PX:
+                inter_cols[a + low[0] + INTER_ROW_TRIM_PX:a + low[-1] + 1 - INTER_ROW_TRIM_PX] = True
         inter_cols &= cols_ok
         locked[sl] = vmask & cols_ok[None, :]
         inter[sl] = rveg[sl] & inter_cols[None, :] & vmask
@@ -287,10 +293,17 @@ def analyze_rows(path: Path, boundary_geojson: str | None = None) -> RowAnalysis
     # measured: inter-row vegetation as scout candidates
     veg_locked = int((rveg & locked).sum())
     res.inter_row_vegetation_percent = round(100 * float(inter.sum()) / max(veg_locked, 1), 1)
-    # drop specks thinner than ~3 px (isolated leaves leaning into the gap),
-    # then join the slivers a patch leaves in neighbouring inter-rows back
-    # into one patch with a row-spacing-wide closing
-    cleaned = ndimage.binary_opening(inter, structure=np.ones((3, 3), bool))
+    # drop specks (leaf tips leaning into the gap, edge jitter) by area, then
+    # join the slivers a patch leaves in neighbouring inter-rows back into one
+    # patch with a row-spacing-wide closing
+    lab0, n0 = ndimage.label(inter)
+    if n0:
+        sizes0 = ndimage.sum(inter, lab0, range(1, n0 + 1)) * gsd * gsd
+        keep = np.zeros(n0 + 1, bool)
+        keep[1:] = sizes0 >= SPECK_MIN_M2
+        cleaned = keep[lab0]
+    else:
+        cleaned = inter
     closed = ndimage.binary_closing(cleaned, structure=np.ones((3, spacing_px + 1), bool))
     closed &= locked
     lab, n = ndimage.label(closed)
