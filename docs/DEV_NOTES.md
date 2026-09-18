@@ -37,14 +37,16 @@ the dead parent's PID. This is how the API served 02:30 code until 03:00 on
 ## run.ps1 owns both servers
 
 `run.ps1` stops the frontend when the backend exits and vice versa (its
-`finally` block), so never kill one of the two by PID to "restart" it — the
-other goes down with it. In `dev` mode the backend runs uvicorn `--reload
---reload-dir app`, so edits under `backend/app/` reload it by themselves
-(edits under `backend/scripts/` deliberately don't); the frontend hot-reloads
-too. To restart everything, stop the launcher and run `.\run.ps1 dev -Lan`
-again. Windows caveat handled inside the script: uvicorn's reloader sends
-CTRL_C_EVENT, which on a shared console would also hit the launcher and the
-frontend, so the backend gets its own hidden console.
+`finally` block, which kills both process *trees*), so never kill one of the
+two by PID to "restart" it — the other goes down with it. In `dev` mode the
+backend runs under `python -m watchfiles … app`, which restarts the whole
+uvicorn process whenever a `.py` file under `backend/app/` changes (edits
+under `backend/scripts/` deliberately don't); the frontend hot-reloads too.
+uvicorn's own `--reload` was dropped on 2026-09-18: on Windows it restarts
+its worker with CTRL_C_EVENT, which never stopped the worker in the hidden
+console the backend runs in, and the reloader then waited forever after the
+first change. To restart everything, stop the launcher and run
+`.\run.ps1 dev -Lan` again.
 
 ## exFAT drive can't hold symlinks
 

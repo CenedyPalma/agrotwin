@@ -43,7 +43,13 @@ $bind = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }
 $backendArgs = "-m uvicorn app.main:app --host $bind --port 8000"
 # Dev reload watches app\ only: the API never imports backend\scripts (the GPU
 # pipeline), so edits there must not restart it.
-if ($Mode -eq "dev") { $backendArgs += " --reload --reload-dir app" }
+if ($Mode -eq "dev") {
+  # uvicorn's own --reload cannot restart its worker here: on Windows it sends
+  # CTRL_C_EVENT, which never stops the worker in this hidden console, and the
+  # reloader then waits forever (verified 2026-09-18). watchfiles restarts the
+  # whole uvicorn process with TerminateProcess instead, which works.
+  $backendArgs = "-m watchfiles --filter python --target-type command `"$python $backendArgs`" app"
+}
 # The backend gets its own (hidden) console. On Windows, uvicorn --reload
 # restarts its worker with CTRL_C_EVENT, which is delivered to every process
 # on the same console; with -NoNewWindow that Ctrl-C also hit this script and
@@ -78,7 +84,9 @@ try {
   if ($backend.HasExited) { Write-Host "backend exited ($($backend.ExitCode)) - see logs\backend.err.log" }
   if ($frontend.HasExited) { Write-Host "frontend exited ($($frontend.ExitCode)) - see logs\frontend.err.log" }
 } finally {
+  # Kill the whole trees: watchfiles/uvicorn and next both spawn children,
+  # and an orphaned child keeps the port and answers with stale code.
   foreach ($p in $backend, $frontend) {
-    if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+    if ($p -and -not $p.HasExited) { & taskkill /PID $p.Id /T /F 2>&1 | Out-Null }
   }
 }
