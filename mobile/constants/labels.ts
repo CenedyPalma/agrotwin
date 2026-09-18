@@ -9,6 +9,7 @@ export const DETECTION_TYPE_LABEL: Record<string, string> = {
   bare_soil: "Bare patch",
   low_crop_density: "Low crop density",
   patchy_vegetation: "Patchy vegetation",
+  weed_candidate: "Possible weeds (between rows)",
 };
 
 /** Plain-language explanation shown under a zone title (design: `z.plain`). */
@@ -16,6 +17,7 @@ export const DETECTION_TYPE_DESCRIPTION: Record<string, string> = {
   bare_soil: "Almost no crop was measured here compared with the rest of the field.",
   low_crop_density: "Plants here are thinner than in the rest of the field, so the ground shows through.",
   patchy_vegetation: "The crop here is uneven — some spots are thinner than their surroundings.",
+  weed_candidate: "Plants are growing between the crop rows here. Walk to it to see what they are — the species is not identified from the image.",
 };
 
 export function detectionTypeLabel(type: string): string {

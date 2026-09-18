@@ -31,6 +31,15 @@ Nothing here is randomly generated. If there isn't enough real data,
 Neither index identifies weed species, disease, or pest damage. Zones are
 labeled only by measurable characteristics (bare soil / low crop density /
 patchy vegetation), never by diagnosis.
+
+On top of the tiers, a map-space result also records (result.metrics_json):
+- row geometry and canopy closure from weed_service (row spacing/bearing,
+  vegetation cover between rows) and, only while rows are separable,
+  inter-row vegetation as "weed_candidate" zones for a scout to check;
+- what trained detectors (detector_service) ran — none unless a model is
+  installed under data/models/;
+- a "vegetation_mask" raster asset showing exactly which pixels the
+  analysis counted as vegetation.
 """
 
 import json
@@ -67,7 +76,10 @@ SAFE_ACTIONS = {
     "bare_soil": "Inspect area for emergence issues",
     "low_crop_density": "Ground inspection recommended",
     "patchy_vegetation": "Uneven vegetation detected — compare with previous survey",
+    "weed_candidate": "Scout for weeds — vegetation between crop rows (species not identified)",
 }
+MODEL_ACTION = "Ground-check this model detection before acting on it"
+WEED_CANDIDATE_CONFIDENCE = 0.6  # inter-row vegetation is a candidate, not an identification
 
 SOURCE_RANK = {"photogrammetry_odm": 0, "direct_georeferencing": 1, "manual_import": 2}
 
@@ -353,9 +365,80 @@ def analyze_from_raster(
             inside = [(f, ratio) for p, f, ratio in polys if cluster.intersects(p.centroid)]
             _add_zone(db, result, cluster.simplify(0.000005), inside, problem)
 
+    result.metrics_json = json.dumps(_extra_measurements(db, survey, field, result, path, method))
     db.flush()
     log.info(
         "%s: %d cells of %.0f m — %.1f%% healthy / %.1f%% attention / %.1f%% problem",
         method, len(cells), CELL_M, result.healthy_area_percent, result.attention_area_percent, result.problem_area_percent,
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Row geometry, weed candidates, trained detectors, vegetation mask
+# ---------------------------------------------------------------------------
+
+
+def _extra_measurements(
+    db: Session, survey: models.Survey, field: models.Field, result: models.AnalysisResult, path: Path, method: str
+) -> dict:
+    from app.services import detector_service, weed_service
+    from app.services.storage_service import survey_dir
+
+    metrics: dict = {}
+    # row analysis needs the RGB orthomosaic; for an NDVI-based analysis look it up separately
+    rgb = path if method == "exg_map" else (_analysis_raster(survey, multispectral=False) or (None, None))[0]
+    if rgb is None:
+        metrics["rows"] = {"status": "no_rgb_orthomosaic", "reason": "row analysis needs an RGB orthomosaic"}
+    else:
+        try:
+            rows = weed_service.analyze_rows(rgb, field.boundary_geojson)
+            metrics["rows"] = rows.metrics()
+            for cand in rows.candidates:
+                db.add(models.DetectionZone(
+                    analysis_result_id=result.id,
+                    type="weed_candidate",
+                    severity="medium" if cand["area_m2"] >= 4 else "low",
+                    confidence=WEED_CANDIDATE_CONFIDENCE,
+                    geometry_geojson=json.dumps(cand["geometry"]),
+                    recommended_action=SAFE_ACTIONS["weed_candidate"],
+                ))
+        except Exception as exc:  # a failed extra never loses the tier result
+            log.exception("row analysis failed")
+            metrics["rows"] = {"status": "error", "reason": str(exc)[:200]}
+        try:
+            mask_path = survey_dir(survey.id) / "outputs" / "vegetation_mask.tif"
+            weed_service.write_vegetation_mask(rgb, mask_path)
+            _register_output_asset(db, survey, "vegetation_mask", mask_path)
+        except Exception as exc:
+            log.exception("vegetation mask failed")
+            metrics["vegetation_mask"] = {"status": "error", "reason": str(exc)[:200]}
+
+    ran: dict[str, int] = {}
+    if rgb is not None:
+        for det in detector_service.run_detectors(rgb):
+            ran[det.detector] = ran.get(det.detector, 0) + 1
+            db.add(models.DetectionZone(
+                analysis_result_id=result.id,
+                type=f"{det.detector}:{det.type}",
+                severity="medium",
+                confidence=round(det.confidence, 2),
+                geometry_geojson=json.dumps(det.geometry),
+                recommended_action=MODEL_ACTION,
+            ))
+    st = detector_service.status()
+    metrics["detectors"] = {"installed": [i["name"] for i in st["installed"]], "ran": ran, "note": st["note"]}
+    return metrics
+
+
+def _register_output_asset(db: Session, survey: models.Survey, asset_type: str, path: Path) -> None:
+    from app.services.orthomosaic_service import extract_bounds_geojson
+
+    for old in [a for a in survey.assets if a.asset_type == asset_type and a.source == "analysis"]:
+        db.delete(old)
+    db.flush()
+    db.add(models.SurveyAsset(
+        survey_id=survey.id, asset_type=asset_type, file_path=str(path), format="tif",
+        bounds_geojson=json.dumps(extract_bounds_geojson(path)), source="analysis",
+    ))
+    db.flush()

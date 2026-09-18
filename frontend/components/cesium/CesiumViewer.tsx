@@ -28,6 +28,8 @@ export interface CursorPosition {
 // Cloudflare WARP) every remote call is time-limited and falls back locally.
 const ESRI_TERRAIN_URL =
   "https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer";
+export const TERRAIN_PROVIDER: "esri" | "ellipsoid" =
+  process.env.NEXT_PUBLIC_TERRAIN === "ellipsoid" ? "ellipsoid" : "esri";
 const TERRAIN_METADATA_TIMEOUT_MS = 12_000;
 const TERRAIN_SAMPLE_TIMEOUT_MS = 15_000;
 
@@ -68,6 +70,7 @@ export interface CesiumViewerProps {
   ndre?: RasterAsset | null;
   gndvi?: RasterAsset | null;
   dsm?: RasterAsset | null;
+  vegetationMask?: RasterAsset | null;
   meshUrl?: string | null;
   /** "reality"/"imported": LOD-tiled tilesets (let Cesium pick LODs); "terrain": single-tile 2.5D fallback */
   meshKind?: MeshKind;
@@ -99,6 +102,7 @@ export default function CesiumViewer({
   ndre = null,
   gndvi = null,
   dsm = null,
+  vegetationMask = null,
   meshUrl = null,
   meshKind = "terrain",
   pointCloudUrl = null,
@@ -133,6 +137,8 @@ export default function CesiumViewer({
   const showMesh = useDigitalTwinStore((s) => s.showMesh);
   const showPointCloud = useDigitalTwinStore((s) => s.showPointCloud);
   const showVectorOverlays = useDigitalTwinStore((s) => s.showVectorOverlays);
+  const showWeedAreas = useDigitalTwinStore((s) => s.showWeedAreas);
+  const showVegetationMask = useDigitalTwinStore((s) => s.showVegetationMask);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,13 +151,18 @@ export default function CesiumViewer({
 
         const imageryProvider = createBasemapProvider(Cesium);
 
-        let terrainProvider: any = await withTimeout(
-          Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(ESRI_TERRAIN_URL).catch(() => null),
-          TERRAIN_METADATA_TIMEOUT_MS,
-          null
-        );
+        // NEXT_PUBLIC_TERRAIN=ellipsoid removes the Esri dependency entirely
+        // (the survey's own reconstructed terrain mesh is unaffected).
+        let terrainProvider: any =
+          TERRAIN_PROVIDER === "esri"
+            ? await withTimeout(
+                Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(ESRI_TERRAIN_URL).catch(() => null),
+                TERRAIN_METADATA_TIMEOUT_MS,
+                null
+              )
+            : null;
         if (!terrainProvider) {
-          console.warn("global terrain unavailable or too slow, falling back to the ellipsoid");
+          if (TERRAIN_PROVIDER === "esri") console.warn("global terrain unavailable or too slow, falling back to the ellipsoid");
           terrainProvider = new Cesium.EllipsoidTerrainProvider();
         }
         if (cancelled || !containerRef.current) return;
@@ -295,11 +306,13 @@ export default function CesiumViewer({
         ndre={ndre}
         gndvi={gndvi}
         dsm={dsm}
+        vegetationMask={vegetationMask}
         showOrthomosaic={showOrthomosaic && !hideDrapes}
         showNdvi={showNdvi && !hideDrapes}
         showNdre={showNdre && !hideDrapes}
         showGndvi={showGndvi && !hideDrapes}
         showDsm={showDsm && !hideDrapes}
+        showVegetationMask={showVegetationMask && !hideDrapes}
       />
       <SurveyImageryLayer
         viewer={viewer}
@@ -353,6 +366,7 @@ export default function CesiumViewer({
         ready={ready}
         detections={detections}
         showProblemZones={showProblemZones}
+        showWeedAreas={showWeedAreas}
         drape={!photorealistic}
         groundHeight={groundH}
         onSelectDetection={onSelectDetection}

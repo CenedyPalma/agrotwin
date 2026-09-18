@@ -18,6 +18,18 @@
 - Raw frames of the current survey are referenced in place under
   `E:\40 ft\RGB Only\Part 1..3` (1,378 DJI `_D.JPG`, RGB only, no bands).
 
+## run.ps1 owns both servers
+
+`run.ps1` stops the frontend when the backend exits and vice versa (its
+`finally` block), so never kill one of the two by PID to "restart" it — the
+other goes down with it. In `dev` mode the backend runs uvicorn `--reload
+--reload-dir app`, so edits under `backend/app/` reload it by themselves
+(edits under `backend/scripts/` deliberately don't); the frontend hot-reloads
+too. To restart everything, stop the launcher and run `.\run.ps1 dev -Lan`
+again. Windows caveat handled inside the script: uvicorn's reloader sends
+CTRL_C_EVENT, which on a shared console would also hit the launcher and the
+frontend, so the backend gets its own hidden console.
+
 ## exFAT drive can't hold symlinks
 
 The source imagery lives on `/media/cdev/Personal1/...` which is exFAT.
